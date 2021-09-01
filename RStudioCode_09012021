@@ -1,0 +1,1415 @@
+Function (initlibraries) to upload libraries
+```{r}
+initlibraries<-function(){
+  library(ggplot2)
+  library(dplyr)
+}
+initlibraries()
+```
+
+Function (summarySE) to summarize Data
+Gives count, mean, standard deviation, standard error of the mean, and confidence interval (default 95%).data: a data frame; measurevar: the name of a column that contains the variable to be summarized; groupvars: a vector containing names of columns that contain grouping variables; na.rm: a boolean that indicates whether to ignore NAs; conf.interval: the percent range of the confidence interval (default is 95%)
+```{r}
+summarySE <- function(data=NULL, measurevar, groupvars=NULL, na.rm=FALSE,
+                      conf.interval=.95, .drop=TRUE) {
+    library(plyr)
+
+    # New version of length which can handle NA's: if na.rm==T, don't count them
+    length2 <- function (x, na.rm=FALSE) {
+        if (na.rm) sum(!is.na(x))
+        else       length(x)
+    }
+
+    # This does the summary. For each group's data frame, return a vector with
+    # N, mean, and sd
+    datac <- ddply(data, groupvars, .drop=.drop,
+      .fun = function(xx, col) {
+        c(N    = length2(xx[[col]], na.rm=na.rm),
+          mean = mean   (xx[[col]], na.rm=na.rm),
+          sd   = sd     (xx[[col]], na.rm=na.rm)
+        )
+      },
+      measurevar
+    )
+
+    # Rename the "mean" column    
+    datac <- rename(datac, c("mean" = measurevar))
+
+    datac$se <- datac$sd / sqrt(datac$N)  # Calculate standard error of the mean
+
+    # Confidence interval multiplier for standard error
+    # Calculate t-statistic for confidence interval: 
+    # e.g., if conf.interval is .95, use .975 (above/below), and use df=N-1
+    ciMult <- qt(conf.interval/2 + .5, datac$N-1)
+    datac$ci <- datac$se * ciMult
+
+    return(datac)
+}
+```
+
+### Part 1: Analyses in anesthetized mice (100 ms photostimulation)
+Function (CalculateVariables)
+1. Input: .txt files from LabChart 
+2. Calculates respiratory variables (Ti, Te, period, Amplitude, Ti/Te, Ti/period, Te/period), phase, and cophase/theta 1,2,3 from Airflow
+```{r}
+CalculateVariables<-function(TimeStart,TimeEnd,intAFPeaksFile,PulsesStartFile,PulsesEndFile,smoothAFPeaksFile,EventsFile){
+  Start<- TimeStart 
+  End<-  TimeEnd
+  DeltaT<-5
+  CyclesAfterStim<-2
+  
+  #Generates Events.txt File: "BegInsp","BegExp"
+	Events<-c()
+  intAF<-read.table(intAFPeaksFile,header=F,dec=".",sep="\t")
+	Events<-cbind(intAF[,2],(intAF[,4]- intAF[,3]/1000)-0.05,intAF[,4])
+	colnames(Events)<-c("Amplitude1","BegInsp","BegExp")
+	Events<-data.frame(Events)
+	write.table(Events,"Events.txt",dec=".",sep=",")
+  
+	#Generates Pulses.txt File: "PulseStart","PulseEnd","PulseWidth"
+	Pulses<-c()
+  BegPulses<-read.table(PulsesStartFile,header=F,dec=".",sep="\t",comment.char="",fill=TRUE)	
+	BegPulsesSel<-subset(BegPulses,BegPulses[,3]!="")
+	
+	EndPulses<-read.table(PulsesEndFile,header=F,dec=".",sep="\t",comment.char="",fill=TRUE)
+	EndPulsesSel<-subset(EndPulses,EndPulses[,3]!="")
+
+	Pulses<-cbind(BegPulsesSel[,1],EndPulsesSel[,1],EndPulsesSel[,1]-BegPulsesSel[,1])
+	colnames(Pulses)<-c("PulseStart","PulseEnd","PulseWidth")
+	Pulses<-data.frame(Pulses)
+	
+	#Upload Smooth AF
+  CompleteData<-read.table(smoothAFPeaksFile,header=F,sep="\t",dec=".",colClasses=c(rep("numeric",2)))
+  CompleteData<-CompleteData[,1:2]
+	colnames(CompleteData)<-c("Time","Airflow")
+	data_sub<-subset(CompleteData,CompleteData[,"Time"]>=Start & CompleteData[,"Time"]<=End)
+	
+	#Visualization
+  Pulses2<-subset(Pulses,Pulses$PulseStart>=Start & Pulses$PulseStart<=End)
+  Events<-read.table(EventsFile,header=T,sep=",",dec=".")
+  Events2<-subset(Events,Events$BegInsp>=Start & Events$BegInsp<=End)
+  
+  numberI<-as.integer((End-Start)/DeltaT)	
+  allI<-Start # Vector(allI) with the start and end for each subset of the data
+  for (i in 1:numberI){		
+    allI<-cbind(allI,(Start+DeltaT*i))		
+  }
+  plotname<-paste("VisEvents-Split",DeltaT,"-",Start,"-",End,".pdf",sep="")
+  pdf(plotname,paper="letter")				
+  par(mfrow=c(2,1),mar=c(4,4,0,0))
+  for(l in 1:(length(allI)-1)){
+    data_sub2<-subset(data_sub,data_sub[,"Time"]>=allI[l] & data_sub[,"Time"]<allI[l+1])	
+	  plot(data_sub2[,"Time"],data_sub2[,"Airflow"],type="l",xlab="Texp(s)",ylab="Airflow",ylim=c(min(data_sub[,"Airflow"]),max(data_sub[,"Airflow"])))	
+	  abline(v=Events2[,"BegInsp"],col="green",lty=2)	
+    abline(v=Events2[,"BegExp"],col="red",lty=2)
+    abline(v=Pulses2[,"PulseStart"],col="blue")
+	  abline(v=Pulses2[,"PulseEnd"],col="blue")
+ 	}
+  dev.off()
+ 	
+	# Calculations
+	for ( i in 1:(nrow(Events2)-1)){
+		Events2$Ti[i]<-Events2$BegExp[i]-Events2$BegInsp[i]
+ 		Events2$Te[i]<-Events2$BegInsp[i+1]-Events2$BegExp[i]
+		Events2$period[i]<-Events2$BegInsp[i+1]-Events2$BegInsp[i]
+		Events2$Amplitude[i]<-Events2$Amplitude1[i]
+		Events2$TiTe[i]<-Events2$Ti[i]/Events2$Te[i]
+		Events2$Tiperiod[i]<-Events2$Ti[i]/Events2$period[i]
+		Events2$Teperiod[i]<-Events2$Te[i]/Events2$period[i]
+	}
+
+	Events2$CycleID<-"No Stimulation"
+	Events2[,c("PhaseStim","Theta1","Theta2","Theta3")]<-NA
+
+	Pulses2$ID<-NA
+	Pulses2$PhaseStim<-NA
+	
+	for(k in 1:nrow(Pulses2)){
+		sel.Events<-subset(Events2,Events2$BegInsp<=Pulses2$PulseStart[k]) #Find All Events Before Stimulation
+		sel.Event<-sel.Events[nrow(sel.Events),] #Select the event just before the Stimulation
+		Stim.Index<-which(Events2$BegInsp==sel.Event$BegInsp) #Index of the Stimulated Event 
+
+		# Stim during Inspiration
+		if(Pulses2$PulseStart[k] >= Events2$BegInsp[Stim.Index] && Pulses2$PulseStart[k] < Events2$BegExp[Stim.Index]){
+			Events2$CycleID[Stim.Index]<-"StimulationInsp"
+			Events2$PhaseStim[Stim.Index]<-abs(Pulses2$PulseStart[k]-Events2$BegInsp[Stim.Index])/Events2$period[Stim.Index-1] #PhaseStim= abs(pulse-begInsp)/period[prev cycle]
+			Events2$Theta1[Stim.Index]<-(Events2$BegInsp[Stim.Index+1]-Pulses2$PulseStart[k])/Events2$period[Stim.Index-1] #Theta1= (beg cycle +1 -startPulse)/period[prev cycle]
+			Events2$Theta2[Stim.Index]<-(Events2$BegInsp[Stim.Index+2]-Pulses2$PulseStart[k])/Events2$period[Stim.Index-1] #Theta2= (beg cycle +2 - startPulse)/period[prev cycle]
+			Events2$Theta3[Stim.Index]<-(Events2$BegInsp[Stim.Index+3]-Pulses2$PulseStart[k])/Events2$period[Stim.Index-1] #Theta3= (beg cycle +3 -startPulse)/period[prev cycle]	
+			#Events2$StimSpanPerc[Stim.Index-1]<-Pulses2$PulseWidth[k]/Events2$period[Stim.Index-1]*100		#Span of the stimulus: duration of the stimulus/period (control) *100 
+
+			Pulses2$ID[k]<-"Inspiration"
+			Pulses2$PhaseStim[k]<-abs(Pulses2$PulseStart[k]-Events2$BegInsp[Stim.Index])/Events2$period[Stim.Index-1] #PhaseStim= abs(pulse-begInsp)/period[prev cycle]
+
+		}
+	
+		# Stim during Expiration
+		if(Pulses2$PulseStart[k] >= Events2$BegExp[Stim.Index] && Pulses2$PulseStart[k] < Events2$BegInsp[Stim.Index+1]){
+			Events2$CycleID[Stim.Index]<-"StimulationExp"
+			Events2$PhaseStim[Stim.Index]<-abs(Pulses2$PulseStart[k]-Events2$BegInsp[Stim.Index])/Events2$period[Stim.Index-1] #PhaseStim= abs(pulse-begInsp)/period[prev cycle]
+			Events2$Theta1[Stim.Index]<-(Events2$BegInsp[Stim.Index+1]-Pulses2$PulseStart[k])/Events2$period[Stim.Index-1] #Theta1= (beg cycle +1 -startPulse)/period[prev cycle]
+			Events2$Theta2[Stim.Index]<-(Events2$BegInsp[Stim.Index+2]-Pulses2$PulseStart[k])/Events2$period[Stim.Index-1] #Theta2= (beg cycle +2 -startPulse)/period[prev cycle]
+			Events2$Theta3[Stim.Index]<-(Events2$BegInsp[Stim.Index+3]-Pulses2$PulseStart[k])/Events2$period[Stim.Index-1] #Theta3= (beg cycle +3 -startPulse)/period[prev cycle]	
+			#Events2$StimSpanPerc[Stim.Index-1]<-Pulses2$PulseWidth[k]/Events2$period[Stim.Index-1]*100
+				
+			Pulses2$ID[k]<-"Expiration"
+			Pulses2$PhaseStim[k]<-abs(Pulses2$PulseStart[k]-Events2$BegInsp[Stim.Index])/Events2$period[Stim.Index-1] #PhaseStim= abs(pulse-begInsp)/period[prev cycle]
+		}
+	}
+	
+	print(table(Events2$CycleID))
+  
+  # SelectedEvents
+	RespVariables<-data.frame(Events2)
+	RespVariables2<-subset(RespVariables,RespVariables$BegInsp>=Start & RespVariables$BegInsp<=End)
+  RespVariables2$CycleID2<-NA
+
+ 	# Insp
+	Stim.Index<-which(RespVariables2$CycleID=="StimulationInsp") #Index of the Stimulated Event during Insp
+	Sel.EventsInsp<-c()
+	if(length(Stim.Index)>0){
+		for(i in 1:(length(Stim.Index)-1)){
+			if(RespVariables2$BegInsp[Stim.Index[i]+CyclesAfterStim]<RespVariables2$BegInsp[(Stim.Index[i+1]-CyclesAfterStim)]){
+				RespVariables2$CycleID2[(Stim.Index[i]-2)]<-"Cycle-2"
+				RespVariables2$CycleID2[(Stim.Index[i]-1)]<-"Cycle-1"
+				RespVariables2$CycleID2[Stim.Index[i]]<-"StimInsp"
+				for(j in 1:CyclesAfterStim){
+					RespVariables2$CycleID2[(Stim.Index[i]+j)]<-paste("Cycle+",j,sep="")
+				}
+				Sel.EventsInsp<-rbind(Sel.EventsInsp,RespVariables2[(Stim.Index[i]-CyclesAfterStim):(Stim.Index[i]+CyclesAfterStim),])
+			}
+			else{
+				print(c(RespVariables2$BegInsp[Stim.Index[i]],":Excluded"))
+			}
+
+		}
+	}
+
+	# Exp
+	Stim.Index<-which(RespVariables2$CycleID=="StimulationExp") #Index of the Stimulated Event during Exp
+	Sel.EventsExp<-c()
+	if(length(Stim.Index)>0){
+		for(i in 1:(length(Stim.Index)-1)){
+			if(RespVariables2$BegInsp[Stim.Index[i]+CyclesAfterStim]<RespVariables2$BegInsp[(Stim.Index[i+1]-CyclesAfterStim)]){
+				RespVariables2$CycleID2[(Stim.Index[i]-2)]<-"Cycle-2"
+				RespVariables2$CycleID2[(Stim.Index[i]-1)]<-"Cycle-1"
+				RespVariables2$CycleID2[Stim.Index[i]]<-"StimExp"
+				for(j in 1:CyclesAfterStim){
+					RespVariables2$CycleID2[(Stim.Index[i]+j)]<-paste("Cycle+",j,sep="")
+				}
+			Sel.EventsExp<-rbind(Sel.EventsExp,RespVariables2[(Stim.Index[i]-CyclesAfterStim):(Stim.Index[i]+CyclesAfterStim),])
+			}
+
+			else{
+				print(c(RespVariables2$BegInsp[Stim.Index[i]],":Excluded"))
+			}
+		}
+	}
+	
+	Sel.Events<-c()
+	Sel.Events<-rbind(Sel.EventsExp,Sel.EventsInsp)
+  write.table(Sel.Events,"SelectedEvents.txt",dec=".",sep=",")
+}
+
+```
+Function (DataCompilation)
+1. Input: list with the names of all SelectedEvents.txt files
+2. Calculates normalized Variables 
+3. Data Compilation (GroupDataFinal.txt)
+```{r}
+DataCompilation<-function(){
+  print(Sys.time())
+  
+  ListFiles<-read.table("PhaseResponseList.txt",colClasses=rep("character",6),header=T,dec=".",sep="\t")
+	print(c("#Animals:",length(unique(ListFiles$AnimalID))))
+	GroupData<-c()
+	for (i in 1:nrow(ListFiles)){
+		filei<-read.table(ListFiles[i,"FileName"],header=T,sep=",",dec=".")
+		file1<-cbind(filei,rep(ListFiles[i,"FileName"],nrow(filei)),rep(ListFiles[i,"TypeInjection"],nrow(filei)),rep(ListFiles[i,"TypeStim"],nrow(filei)),rep(ListFiles[i,"TypeStimInjection"],nrow(filei)),rep(ListFiles[i,"AnimalID"],nrow(filei)),rep(ListFiles[i,"Date"],nrow(filei)))
+		GroupData<-rbind(GroupData,file1)
+	}
+	
+	# Normalized by Cycle -1
+	colnames(GroupData)<-c(colnames(filei),colnames(ListFiles))
+	indexsel<-which(GroupData[,"CycleID2"]=="Cycle-1")
+  GroupData[indexsel,"TiNorm"]<-GroupData[indexsel,"Ti"]/GroupData[indexsel-1,"Ti"]
+  GroupData[indexsel,"TeNorm"]<-GroupData[indexsel,"Te"]/GroupData[indexsel-1,"Te"]
+  GroupData[indexsel,"periodNorm"]<-GroupData[indexsel,"period"]/GroupData[indexsel-1,"period"]
+  GroupData[indexsel,"AmplitudeNorm"]<-GroupData[indexsel,"Amplitude"]/GroupData[indexsel-1,"Amplitude"]
+  GroupData[indexsel,"TiTeNorm"]<-GroupData[indexsel,"TiTe"]/GroupData[indexsel-1,"TiTe"]
+  GroupData[indexsel,"TiperiodNorm"]<-GroupData[indexsel,"Tiperiod"]/GroupData[indexsel-1,"Tiperiod"]
+  GroupData[indexsel,"TeperiodNorm"]<-GroupData[indexsel,"Teperiod"]/GroupData[indexsel-1,"Teperiod"]
+
+	#Calculate phaseNoStim to cycle -1
+	IndexStim<-which(GroupData$CycleID!="No Stimulation")
+	for (j in 1: length(IndexStim)){
+	  PulseOnset<-GroupData[IndexStim[j],"PhaseStim"]*GroupData[(IndexStim[j]-1),"period"]  #Time after BegInsp
+    PulseStart_Nostim<- GroupData[(IndexStim[j]-1),"BegInsp"]+ PulseOnset
+    GroupData[IndexStim[j]-1,"PhaseStim"]<-(PulseStart_Nostim-GroupData[(IndexStim[j]-1),"BegInsp"])/GroupData[(IndexStim[j]-2),"period"]
+	}
+	write.table(GroupData,"GroupDataFinal.txt",sep="\t",dec=".")
+	
+}
+DataCompilation()
+```
+Function (Analyses_NoStim_Stim_Phase)
+1. Plots for Figure 2: NoStim (Pre) and Stim phase vs. cophase; duration (phase+cophase) vs. freq; distribution cophase/duration when: all freq,low freq,and high freq 
+2. Linear regression: phase vs. cophase
+3. Identification of f threshold 
+```{r}
+Analyses_NoStim_Stim_Phase<-function(){
+  GroupData<-read.table("GroupDataFinal.txt",sep="\t",dec=".")
+  IndexStim<-which(GroupData[,"CycleID"]!="No Stimulation")
+  GroupData_Stim<-GroupData[IndexStim,]
+  print(paste("TotalPulses:",nrow(GroupData_Stim),sep=""))
+
+  pdf("NoStimVsStim_Phase.pdf")
+  
+  # All Freq
+  #NoStim: Phase vs Cophase
+  print("NoStim-AllFreq Insp&Exp")
+  PulseOnset<-GroupData[IndexStim,"PhaseStim"]*GroupData[(IndexStim-1),"period"]  #Time after BegInsp
+  PulseStart_Nostim<- GroupData[IndexStim-1,"BegInsp"]+ PulseOnset
+  PhaseNoStim<-(PulseStart_Nostim-GroupData[IndexStim-1,"BegInsp"])/GroupData[IndexStim-2,"period"]
+  Theta1NoStim<-(GroupData[IndexStim,"BegInsp"]-PulseStart_Nostim)/GroupData[IndexStim-2,"period"] 
+  ID<-GroupData[IndexStim,"CycleID"]
+  FreqNoStim<-1/GroupData[(IndexStim-2),"period"]
+  NostimData<-data.frame(PhaseNoStim,Theta1NoStim,ID, FreqNoStim)
+  
+	g2<-ggplot(NostimData,aes(x=PhaseNoStim,y=Theta1NoStim,col=factor(ID))) + geom_point(size=0.1) + geom_abline(intercept = 1, slope = -1, col="black",lty=2) +  xlim(-0.5,4.5) + ylim(-0.5,4.5)+ xlab(expression("Phase of stimulation: "*phi*"")) + ylab(expression("Cophase: "*theta[1]*"")) + theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+ scale_colour_manual(values=c("deepskyblue3","darkorange"))
+	print(g2)
+
+	#95% confidence
+	NoStimData_Exp<-subset(NostimData,NostimData$ID=="StimulationExp")
+  meanDuration<- mean(NoStimData_Exp$PhaseNoStim+NoStimData_Exp$Theta1NoStim)
+  meanDuration_Exp<-meanDuration
+  sdDuration<- 2*sd(NoStimData_Exp$PhaseNoStim+NoStimData_Exp$Theta1NoStim)
+  sdDuration_Exp<-sdDuration
+  
+	plot(x=NoStimData_Exp$FreqNoStim,y=(NoStimData_Exp$PhaseNoStim+NoStimData_Exp$Theta1NoStim),pch=19,cex=0.5,col="deepskyblue3",xlim=c(0,4),ylim=c(0,2),xlab="Freq(Hz)",ylab="Theta&Phase",main="No StimulationExp: All Freq")
+	abline(h=meanDuration+sdDuration,col="gray38",lty=1,lwd=3)
+	abline(h=meanDuration-sdDuration,col="gray38",lty=1,lwd=3)
+	
+  #Stim: Phase vs Cophase
+  print("Stim-AllFreq Insp&Exp")
+	g1<-ggplot(GroupData_Stim,aes(x=PhaseStim,y=Theta1,col=factor(CycleID2))) + geom_point(size=0.1) + geom_abline(intercept = 1, slope = -1, col="black",lty=2)  + xlim(-0.5,4.5) + ylim(-0.5,4.5)+ xlab(expression("Phase of stimulation: "*phi*"")) + ylab(expression("Cophase: "*theta[1]*"")) + theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + scale_colour_manual(values=c("deepskyblue3","darkorange"))
+	print(g1)
+
+  #95% confidence
+	IndexStimExp<-which(GroupData[,"CycleID2"]=="StimExp")
+  GroupData_StimExp<-GroupData[IndexStimExp,]
+  BaselineFreq<-1/GroupData[(IndexStimExp-1),"period"]
+
+	plot(x=BaselineFreq,y=(GroupData_StimExp$PhaseStim+GroupData_StimExp$Theta1),pch=19,cex=0.5,col="deepskyblue3",xlim=c(0,4),ylim=c(0,2),xlab="Freq(Hz)",ylab="Theta&Phase",main="StimulationExp: All Freq")
+	abline(h=meanDuration+sdDuration,col="gray38",lty=1,lwd=3)
+	abline(h=meanDuration-sdDuration,col="gray38",lty=1,lwd=3)
+	abline(v=2.5,col="palegreen4",lty=1,lwd=3)
+	
+  #######################################################################################################################################
+  #NoStim >=2.5Hz
+  IndexBaselineFreq<-which(GroupData[,"CycleID2"]=="Cycle-1" & GroupData[,"period"]<=0.4)
+
+  PulseOnset<-GroupData[IndexBaselineFreq+1,"PhaseStim"]*GroupData[IndexBaselineFreq,"period"]  #Time after BegInsp
+  PulseStart_Nostim<- GroupData[IndexBaselineFreq,"BegInsp"]+ PulseOnset
+  PhaseNoStim<-(PulseStart_Nostim-GroupData[IndexBaselineFreq,"BegInsp"])/GroupData[IndexBaselineFreq-1,"period"]
+  Theta1NoStim<-(GroupData[IndexBaselineFreq+1,"BegInsp"]-PulseStart_Nostim)/GroupData[IndexBaselineFreq-1,"period"]
+  ID<-GroupData[IndexBaselineFreq+1,"CycleID"]
+  NostimData<-data.frame(PhaseNoStim,Theta1NoStim,ID)
+  
+	print("NoStim-HighFreq Insp&Exp")
+	g3<-ggplot(NostimData,aes(x=PhaseNoStim,y=Theta1NoStim,col=factor(ID))) + geom_point(size=0.1) + geom_abline(intercept = 1, slope = -1, col="black",lty=2) + xlim(-0.5,4.5) + ylim(-0.5,4.5)+ xlab(expression("Phase of No Stimulation: "*phi*"")) + ylab(expression("Cophase: "*theta[1]*"")) + scale_fill_discrete(breaks=c("StimulationInsp","StimulationExp")) + theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + scale_colour_manual(values=c("deepskyblue3","darkorange"))
+	print(g3)
+	
+	print("NoStim HighFreq Only Insp")
+	NoStimInsp<-subset(NostimData,NostimData$ID=="StimulationInsp")
+	res4<-lm(Theta1NoStim~PhaseNoStim,data=NoStimInsp) #theta=m*Phase+b
+  print(summary(res4))
+  hist(NoStimInsp$PhaseNoStim+NoStimInsp$Theta1NoStim,border="black",prob = TRUE, xlab = "Theta&Phase",main = "NoStimInsp: high freq",ylim=c(0,20),xlim=c(-0.5,2))
+  lines(density(NoStimInsp$PhaseNoStim+NoStimInsp$Theta1NoStim),lwd = 6, col = "darkorange")
+  hist(NoStimInsp$Theta1NoStim,border="black",prob = TRUE, xlab = "Theta",main = "NoStimInsp: high freq",ylim=c(0,20),xlim=c(-0.5,2))
+  lines(density(NoStimInsp$Theta1NoStim),lwd = 6, col = "darkorange")
+  
+	print("NoStim HighFreq Only Exp")
+	NoStimExp<-subset(NostimData,NostimData$ID=="StimulationExp")
+	res5<-lm(Theta1NoStim~PhaseNoStim,data=NoStimExp) #theta=m*Phase+b
+  print(summary(res5))
+  hist(NoStimExp$PhaseNoStim+NoStimExp$Theta1NoStim,border="black",prob = TRUE, xlab = "Theta&Phase",main = "NoStimExp: high freq",ylim=c(0,20),xlim=c(-0.5,2))
+  lines(density(NoStimExp$PhaseNoStim+NoStimExp$Theta1NoStim),lwd = 6, col = "deepskyblue3")
+  hist(NoStimExp$Theta1NoStim,border="black",prob = TRUE, xlab = "Theta",main = "NoStimExp: high freq",ylim=c(0,20),xlim=c(-0.5,2))
+  lines(density(NoStimExp$Theta1NoStim),lwd = 6, col = "deepskyblue3")
+  
+  #NoStim < 2.5Hz
+  IndexBaselineFreq<-which(GroupData[,"CycleID2"]=="Cycle-1" & GroupData[,"period"]>0.4)
+
+  PulseOnset<-GroupData[IndexBaselineFreq+1,"PhaseStim"]*GroupData[IndexBaselineFreq,"period"]  #Time after BegInsp
+  PulseStart_Nostim<- GroupData[IndexBaselineFreq,"BegInsp"]+ PulseOnset
+  PhaseNoStim<-(PulseStart_Nostim-GroupData[IndexBaselineFreq,"BegInsp"])/GroupData[IndexBaselineFreq-1,"period"]
+  Theta1NoStim<-(GroupData[IndexBaselineFreq+1,"BegInsp"]-PulseStart_Nostim)/GroupData[IndexBaselineFreq-1,"period"]
+  ID<-GroupData[IndexBaselineFreq+1,"CycleID"]
+  NostimData<-data.frame(PhaseNoStim,Theta1NoStim,ID)
+
+	print("NoStim-LowFreq Insp&Exp")
+	g3<-ggplot(NostimData,aes(x=PhaseNoStim,y=Theta1NoStim,col=factor(ID))) + geom_point(size=0.1) + geom_abline(intercept = 1, slope = -1, col="black",lty=2) + xlim(-0.5,4.5) + ylim(-0.5,4.5)+ xlab(expression("Phase of No Stimulation: "*phi*"")) + ylab(expression("Cophase: "*theta[1]*"")) + scale_fill_discrete(breaks=c("StimulationInsp","StimulationExp")) + theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + scale_colour_manual(values=c("deepskyblue3","darkorange"))
+	print(g3)
+
+	print("NoStim LowFreq Only Insp")
+	NoStimInsp<-subset(NostimData,NostimData$ID=="StimulationInsp")
+	res4<-lm(Theta1NoStim~PhaseNoStim,data= NoStimInsp) #theta=m*Phase+b
+  print(summary(res4))
+  hist(NoStimInsp$PhaseNoStim+NoStimInsp$Theta1NoStim,border="black",prob = TRUE, xlab = "Theta&Phase",main = "NoStimInsp: low freq",ylim=c(0,20),xlim=c(-0.5,2))
+  lines(density(NoStimInsp$PhaseNoStim+NoStimInsp$Theta1NoStim),lwd = 6, col = "darkorange")
+  hist(NoStimInsp$Theta1NoStim,border="black",prob = TRUE, xlab = "Theta",main = "NoStimInsp: low freq",ylim=c(0,20),xlim=c(-0.5,2))
+  lines(density(NoStimInsp$Theta1NoStim),lwd = 6, col = "darkorange")
+  
+	print("NoStim LowFreq Only Exp")
+	NoStimExp<-subset(NostimData,NostimData$ID=="StimulationExp")
+	res5<-lm(Theta1NoStim~PhaseNoStim,data= NoStimExp) #theta=m*Phase+b
+  print(summary(res5))
+  hist(NoStimExp$PhaseNoStim+NoStimExp$Theta1NoStim,border="black",prob = TRUE, xlab = "Theta&Phase",main = "NoStimExp: low freq",ylim=c(0,20),xlim=c(-0.5,2))
+  lines(density(NoStimExp$PhaseNoStim+NoStimExp$Theta1NoStim),lwd = 6, col = "deepskyblue3")
+  hist(NoStimExp$Theta1NoStim,border="black",prob = TRUE, xlab = "Theta",main = "NoStimExp: low freq",ylim=c(0,20),xlim=c(-0.5,2))
+  lines(density(NoStimExp$Theta1NoStim),lwd = 6, col = "deepskyblue3")
+
+	##############################################################################
+  #Stim >=2.5Hz
+  IndexBaselineFreq<-which(GroupData[,"CycleID2"]=="Cycle-1" & GroupData[,"period"]<=0.4)
+	GroupData_Stim<-GroupData[IndexBaselineFreq+1,]
+
+	print("Stim HighFreq Insp&Exp")
+	g3<-ggplot(GroupData_Stim,aes(x=PhaseStim,y=Theta1,col=factor(CycleID2))) + geom_point(size=0.1) + geom_abline(intercept = 1, slope = -1, col="black",lty=2)+ xlim(-0.5,4.5) + ylim(-0.5,4.5)+ xlab(expression("Phase of stimulation: "*phi*"")) + ylab(expression("Cophase: "*theta[1]*"")) + scale_fill_discrete(breaks=c("StimulationInsp","StimulationExp","No Stimulation")) + theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + scale_colour_manual(values=c("deepskyblue3","darkorange"))
+	print(g3)
+	
+	print("Stim HighFreq Only Insp")
+	GroupData_StimInsp<-subset(GroupData_Stim,GroupData_Stim$CycleID=="StimulationInsp")
+	res4<-lm(Theta1~PhaseStim,data= GroupData_StimInsp) #theta=m*Phase+b
+  print(summary(res4))
+  hist(GroupData_StimInsp$PhaseStim+GroupData_StimInsp$Theta1,border="black",prob = TRUE, xlab = "Theta&Phase",main = "StimInsp: high freq",ylim=c(0,8),xlim=c(-0.5,2))
+  lines(density(GroupData_StimInsp$PhaseStim+GroupData_StimInsp$Theta1),lwd = 6, col = "darkorange")
+  hist(GroupData_StimInsp$Theta1,border="black",prob = TRUE, xlab = "Theta",main = "StimInsp: high freq",ylim=c(0,10),xlim=c(-0.5,2))
+  lines(density(GroupData_StimInsp$Theta1),lwd = 6, col = "darkorange")
+  
+	print("Stim HighFreq Only Exp")
+	GroupData_StimExp<-subset(GroupData_Stim,GroupData_Stim$CycleID=="StimulationExp")
+	res5<-lm(Theta1~PhaseStim,data= GroupData_StimExp) #theta=m*Phase+b
+  print(summary(res5))
+
+  hist(GroupData_StimExp$PhaseStim+GroupData_StimExp$Theta1,border="black",prob = TRUE, xlab = "Theta&Phase",main = "StimExp: high freq",ylim=c(0,4),xlim=c(-0.5,2))
+  lines(density(GroupData_StimExp$PhaseStim+GroupData_StimExp$Theta1),lwd = 6, col = "deepskyblue3")
+  hist(GroupData_StimExp$Theta1,border="black",prob = TRUE, xlab = "Theta",main = "StimExp: high freq",ylim=c(0,10),xlim=c(-0.5,2))
+  lines(density(GroupData_StimExp$Theta1),lwd = 6, col = "deepskyblue3")
+
+	#Stim <2.5Hz
+  IndexBaselineFreq<-which(GroupData[,"CycleID2"]=="Cycle-1" & GroupData[,"period"]>0.4)
+	GroupData_Stim<-GroupData[IndexBaselineFreq+1,]
+
+	print("Stim LowFreq Insp&Exp")
+	g5<-ggplot(GroupData_Stim,aes(x=PhaseStim,y=Theta1,col=factor(CycleID2))) + geom_point(size=0.1) + geom_abline(intercept = 1, slope = -1, col="black",lty=2)+ xlim(-0.5,4.5) + ylim(-0.5,4.5)+ xlab(expression("Phase of stimulation: "*phi*"")) + ylab(expression("Cophase: "*theta[1]*"")) + scale_fill_discrete(breaks=c("StimulationInsp","StimulationExp","No Stimulation")) + theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+ scale_colour_manual(values=c("deepskyblue3","darkorange"))
+	print(g5)
+	
+	print("Stim LowFreq Only Insp")
+	GroupData_StimInsp<-subset(GroupData_Stim,GroupData_Stim$CycleID=="StimulationInsp")
+	res7<-lm(Theta1~PhaseStim,data= GroupData_StimInsp) #theta=m*Phase+b
+  print(summary(res7))
+  
+  hist(GroupData_StimInsp$PhaseStim+GroupData_StimInsp$Theta1,border="black",prob = TRUE, xlab = "Theta&Phase",main = "StimInsp: low freq",ylim=c(0,8),xlim=c(-0.5,2))
+  lines(density(GroupData_StimInsp$PhaseStim+GroupData_StimInsp$Theta1),lwd = 6, col = "darkorange")
+  hist(GroupData_StimInsp$Theta1,border="black",prob = TRUE, xlab = "Theta",main = "StimInsp: low freq",ylim=c(0,8),xlim=c(-0.5,2))
+  lines(density(GroupData_StimInsp$Theta1),lwd = 6, col = "darkorange")
+  
+	print("Stim LowFreq Only Exp")
+	GroupData_StimExp<-subset(GroupData_Stim,GroupData_Stim$CycleID=="StimulationExp")
+	res9<-lm(Theta1~PhaseStim,data= GroupData_StimExp) #theta=m*Phase+b
+  print(summary(res9))
+  
+  hist(GroupData_StimExp$PhaseStim+GroupData_StimExp$Theta1,border="black",prob = TRUE, xlab = "Theta&Phase",main = "StimExp: low freq",ylim=c(0,4),xlim=c(-0.5,2))
+  lines(density(GroupData_StimExp$PhaseStim+GroupData_StimExp$Theta1),lwd = 6, col = "deepskyblue3")
+  hist(GroupData_StimExp$Theta1,border="black",prob = TRUE, xlab = "Theta",main = "StimExp: low freq",ylim=c(0,8),xlim=c(-0.5,2))
+  lines(density(GroupData_StimExp$Theta1),lwd = 6, col = "deepskyblue3")
+
+  #################################################################################################
+	#All breaths bellow or above 95%; no stim expiration
+  print("NoStimExp:%BreathsDurationsignificant:")
+  BreathsBellowAbove<-subset(NoStimData_Exp,((NoStimData_Exp$PhaseNoStim+NoStimData_Exp$Theta1NoStim)< (meanDuration_Exp-sdDuration_Exp)) | ((NoStimData_Exp$PhaseNoStim+NoStimData_Exp$Theta1NoStim) > (meanDuration_Exp+sdDuration_Exp)))
+	print(nrow(BreathsBellowAbove)/nrow(NostimData)*100)
+
+  #Finding f threshold without stimulation
+	testF<-c(1,1.5,2,2.5,3,3.5,4)
+	#>=testF
+  for(f in 1:length(testF)){
+    print(paste("NoStim:f Threshold>=",testF[f]))
+    NostimData_sel<-subset(NoStimData_Exp,NoStimData_Exp$FreqNoStim>=testF[f])
+	  BreathsBellow<-subset(NostimData_sel,((NostimData_sel$PhaseNoStim+NostimData_sel$Theta1NoStim)<(meanDuration_Exp-sdDuration_Exp)))
+	  print(nrow(BreathsBellow)/nrow(NostimData_sel)*100)
+	  BreathsAbove<-subset(NostimData_sel,((NostimData_sel$PhaseNoStim+NostimData_sel$Theta1NoStim)>(meanDuration_Exp+sdDuration_Exp)))
+    print(nrow(BreathsAbove)/nrow(NostimData_sel)*100)
+
+  }
+	#<testF
+  for(f in 1:length(testF)){
+    print(paste("NoStim:f Threshold<",testF[f]))
+    NostimData_sel<-subset(NoStimData_Exp,NoStimData_Exp$FreqNoStim<testF[f])
+	  BreathsBellow<-subset(NostimData_sel,((NostimData_sel$PhaseNoStim+NostimData_sel$Theta1NoStim)<(meanDuration_Exp-sdDuration_Exp)))
+	  print(nrow(BreathsBellow)/nrow(NostimData_sel)*100)
+	  BreathsAbove<-subset(NostimData_sel,((NostimData_sel$PhaseNoStim+NostimData_sel$Theta1NoStim)>(meanDuration_Exp+sdDuration_Exp)))
+    print(nrow(BreathsAbove)/nrow(NostimData_sel)*100)
+
+  }
+
+	#With Stimulation during Exp
+	IndexStim<-which(GroupData[,"CycleID"]=="StimulationExp")
+	#All breaths bellow or above 95% CI; stim exp
+  print("StimExp:%BreathsDurationsignificant:")
+  stimData<-GroupData[IndexStim,]
+  BreathsBellowAbove<-subset(stimData,(stimData[,"Theta1"]+stimData[,"PhaseStim"])<meanDuration-sdDuration | (stimData[,"Theta1"]+stimData[,"PhaseStim"])>meanDuration+sdDuration)
+	print(nrow(BreathsBellowAbove)/nrow(NostimData)*100)
+
+	#Finding f threshold with stimulation
+	testF<-c(1,1.5,2,2.5,3,3.5,4)
+	print("Above ftest")
+  for(f in 1:length(testF)){
+    print(paste("Stim: f Threshold>=",testF[f]))
+    IndexBaselineFreq<-which(GroupData[,"CycleID2"]=="Cycle-1" & GroupData[,"period"]<=1/testF[f])
+	  GroupData_sel<-GroupData[(IndexBaselineFreq+1),]
+	  GroupData_sel_stim<-subset(GroupData_sel,GroupData_sel[,"CycleID"]=="StimulationExp")
+
+	  BreathsBellow<-subset(GroupData_sel_stim,(GroupData_sel_stim[,"Theta1"]+GroupData_sel_stim[,"PhaseStim"])<meanDuration_Exp-sdDuration_Exp)
+	  print(nrow(BreathsBellow)/nrow(GroupData_sel_stim)*100)
+	  BreathsAbove<-subset(GroupData_sel_stim,(GroupData_sel_stim[,"Theta1"]+GroupData_sel_stim[,"PhaseStim"])>meanDuration_Exp+sdDuration_Exp)
+    print(nrow(BreathsAbove)/nrow(GroupData_sel_stim)*100)
+
+  }
+	print("Bellow ftest")
+  for(f in 1:length(testF)){
+    print(paste("Stim: f Threshold<",testF[f]))
+    IndexBaselineFreq<-which(GroupData[,"CycleID2"]=="Cycle-1" & GroupData[,"period"]>1/testF[f])
+	  GroupData_sel<-GroupData[(IndexBaselineFreq+1),]
+	  GroupData_sel_stim<-subset(GroupData_sel,GroupData_sel[,"CycleID"]=="StimulationExp")
+
+	  BreathsBellow<-subset(GroupData_sel_stim,(GroupData_sel_stim[,"Theta1"]+GroupData_sel_stim[,"PhaseStim"])<meanDuration_Exp-sdDuration_Exp)
+	  print(nrow(BreathsBellow)/nrow(GroupData_sel_stim)*100)
+	  BreathsAbove<-subset(GroupData_sel_stim,(GroupData_sel_stim[,"Theta1"]+GroupData_sel_stim[,"PhaseStim"])>meanDuration_Exp+sdDuration_Exp)
+    print(nrow(BreathsAbove)/nrow(GroupData_sel_stim)*100)
+
+  }
+  dev.off()
+}
+Analyses_NoStim_Stim_Phase()
+```
+
+Function (Plots_GroupData_RespVar)
+1. Plots and Stats for Figure 3
+```{r}
+Plots_GroupData_RespVar<-function(BFreq,VarName,Datapoints){
+	print(Sys.time())
+  HighFreq<-0.4
+	GroupData<-read.table("GroupDataFinal.txt",sep="\t",dec=".")
+	GroupData$ID3<- NA
+	IndexStim<-which(GroupData$CycleID!="No Stimulation")
+
+  if(BFreq=="LowFreq"){
+    print("Low Freq only")
+    ControlIndex<-which(GroupData$CycleID2=="Cycle-1" & GroupData$period>HighFreq)
+  }
+	if(BFreq=="HighFreq"){
+	 print("High Freq only")
+    ControlIndex<-which(GroupData$CycleID2=="Cycle-1" & GroupData$period<=HighFreq)
+	}
+	if(BFreq!="LowFreq" && BFreq!="HighFreq"){
+	  print("All Freq")
+	  ControlIndex<-which(GroupData$CycleID2=="Cycle-1")
+	}
+  
+  GroupData$CycleID3<- NA
+  GroupData$CycleID3[ControlIndex+1]<- "Stim" 
+  GroupData$CycleID3[ControlIndex]<- "Cycle-1"
+  GroupData2<-rbind(GroupData[ControlIndex,],GroupData[ControlIndex+1,])
+  
+  NA.index<-which(is.na(GroupData2[,VarName]))
+	if(length(NA.index>0)){
+	  print(c(BFreq,"-",VarName,"-RowRemoved_NA:",length(NA.index)))
+	  GroupData2<-GroupData2[-NA.index,]
+	}
+
+	Bin<- 0.1
+	Interval1<- 0
+	Interval2<- 1
+	GroupData2<-subset(GroupData2,GroupData2$PhaseStim>=Interval1 & GroupData2$PhaseStim<=Interval2)
+	print(paste("TotalDatapoints:",nrow(GroupData2[GroupData2$CycleID!="No Stimulation",]),sep=""))
+	print(paste("TotalMice:",length(unique(GroupData2$AnimalID)),sep=""))
+	
+	GroupData2$SubGroupInterval<-c(rep(NA,nrow(GroupData2)))
+	GroupData2$SubGroup<-c(rep(NA,nrow(GroupData2)))
+	#cut.PhaseStim<-seq(0,max(GroupData2$PhaseStim),by=bin.phase)
+	cut.PhaseStim<-seq(Interval1,Interval2,by=Bin) #Insp/early exp 0.36
+	print(cut.PhaseStim)
+	for(j in 1:(length(cut.PhaseStim)-1)){
+		index.bin<-which(GroupData2$PhaseStim>=cut.PhaseStim[j] & GroupData2$PhaseStim<cut.PhaseStim[j+1] & GroupData2$PhaseStim != "NA")
+		if(j==(length(cut.PhaseStim)-1)){
+			#index.bin<-which(GroupData2$PhaseStim>=cut.PhaseStim[j] & GroupData2$PhaseStim<=cut.PhaseStim[j+1])
+			index.bin<-which(GroupData2$PhaseStim>=cut.PhaseStim[j] & GroupData2$PhaseStim<=1.5)
+		}
+		GroupData2$SubGroupInterval[index.bin]<-paste("[",cut.PhaseStim[j],"-",cut.PhaseStim[j+1],"[",sep="")
+		GroupData2$SubGroup[index.bin]<-j
+	}
+
+	if(VarName=="Ti"){
+	  Min.Var<-0
+	  Max.Var<-0.35
+	}
+	if(VarName=="Te"){
+	  Min.Var<- 0
+	  Max.Var<- 1.5
+	}
+	if(VarName=="Amplitude"){
+	  Min.Var<-0
+	  Max.Var<-0.015
+	}
+	
+	#Summary data
+	tmp <- data.frame(a=GroupData2[,"SubGroup"], b=GroupData2[,VarName],c=GroupData2[,"CycleID3"],e=GroupData2[,"SubGroupInterval"])
+	tmpsummary <- summarySE(tmp, measurevar="b", groupvars=c("a","c"))   #a=Subgroup/Bin, b=variable,c=CycleID3
+	print(tmpsummary)
+	
+	#Boxplots
+	tmp$c<-factor(tmp$c,levels=c("Cycle-1","Stim"))
+	tmp$a<-factor(tmp$a)
+	g2<-ggplot(tmp,aes(x=a,y=b,fill=c)) + geom_boxplot(outlier.shape=NA,lwd=0.7) +stat_summary(fun=mean,size=2.5,shape=23, geom='point',position=position_dodge(0.76)) + scale_fill_manual(values=c("white","blue")) + ylab(VarName) + xlab(expression("Phase of stimulation: "*phi*"")) + labs(title = BFreq)+theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + scale_y_continuous(limits=c(Min.Var,Max.Var))
+  plotname3<-paste(BFreq,"-",VarName,"-Boxplot.tiff",sep="")
+  #+ geom_jitter(size=0.6,position=position_jitterdodge(),alpha=1)
+	print(plotname3)
+	ggsave(plotname3, units="in", dpi=300)
+	
+	# By bin
+	#Stats Wilcox.test
+	uBins<-unique(sort(tmp$a))
+	for (l in 1:length(uBins)){
+	  tmp.sub<-subset(tmp,(tmp$a==uBins[l]))
+	  print(unique(tmp.sub$e))
+	  print("Cycle-1 vs Stim")
+	  print(wilcox.test(b ~ c,data=tmp.sub,paired=F,alternative = "two.sided",correct=F,exact=T,conf.int = TRUE)) #Cycle-1 vs Stim
+	}   
+
+}
+#Plots_GroupData_RespVar("AllFreq","Ti")
+Plots_GroupData_RespVar("LowFreq","Ti")
+Plots_GroupData_RespVar("HighFreq","Ti")
+#Plots_GroupData_RespVar("AllFreq","Amplitude")
+Plots_GroupData_RespVar("LowFreq","Amplitude")
+Plots_GroupData_RespVar("HighFreq","Amplitude")
+#Plots_GroupData_RespVar("AllFreq","Te")
+Plots_GroupData_RespVar("LowFreq","Te")
+Plots_GroupData_RespVar("HighFreq","Te")
+```
+
+Function (Analyses_NoStim_Stim_PRC)
+1. Plots for figures 4 and 5; Plots NoStim (Pre) and Stim: Tinorm,Tenorm, Ampnorm vs. phase when: Allfreq, LowFreq, HighFreq. Histogram % Breaths vs. Bin Phase when: LowFreq vs. HighFreq
+2. Calculation of % significant breaths
+```{r}
+Analyses_NoStim_Stim_PRC<-function(){
+  Var.Names<-c("TiNorm","TeNorm","AmplitudeNorm")
+  GroupData<-read.table("GroupDataFinal.txt",sep="\t",dec=".")
+  
+  pdf("NoStimVsStim_PRC.pdf")
+	for(i in 1:length(Var.Names)){
+	  print(Var.Names[i])
+	  
+	  if(Var.Names[i]=="TeNorm"){
+      indexRemoveDataPoint<-which(GroupData[,"TeNorm"]>4)
+      print(c("Removed:",length(indexRemoveDataPoint),"datapoint(s)"))
+      GroupData<-GroupData[-indexRemoveDataPoint,]
+	  }
+	  
+	  if(Var.Names[i]=="AmplitudeNorm"){
+      indexRemoveDataPoint<-which(GroupData[,"AmplitudeNorm"]>6)
+      print(c("Removed:",length(indexRemoveDataPoint),"datapoint(s)"))
+      GroupData<-GroupData[-indexRemoveDataPoint,]
+    }
+    
+	  IndexStim<-which(GroupData[,"CycleID"]!="No Stimulation")
+	  print(paste("TotalDatapoints:",length(IndexStim),sep=""))
+	  
+	  #NoStim
+    GroupData_NoStimVar<-GroupData[(IndexStim-1),Var.Names[i]]
+    PulseOnset<-GroupData[IndexStim,"PhaseStim"]*GroupData[(IndexStim-1),"period"]  #Time after BegInsp
+    PulseStart_Nostim<- GroupData[(IndexStim-1),"BegInsp"]+ PulseOnset
+    GroupData_NoStimPhase<-(PulseStart_Nostim-GroupData[(IndexStim-1),"BegInsp"])/GroupData[(IndexStim-2),"period"]
+    
+    MeanNoStimVar<- mean(GroupData_NoStimVar,na.rm=TRUE)
+    CINoStimVar<- 2*sd(GroupData_NoStimVar,na.rm=TRUE)
+    print(paste("AllFreq-Mean:",MeanNoStimVar,"+/-CI",CINoStimVar))
+    
+    plot(x=GroupData_NoStimPhase,y=GroupData_NoStimVar,xlim=c(0,1.3),ylim=c(0,2.5),xlab=expression("Phase of stimulation: "*phi*""),ylab=Var.Names[i],main="NoStim AllFreq",pch=20,col="gray60")	
+    abline(h=MeanNoStimVar+CINoStimVar,col="gray38",lty=1,lwd=3)
+	  abline(h=MeanNoStimVar-CINoStimVar,col="gray38",lty=1,lwd=3)
+    
+    if(Var.Names[i]=="TiNorm" | Var.Names[i]=="AmplitudeNorm" ){
+	    IndexStim2<-which(GroupData[,"CycleID"]=="StimulationInsp")
+    }
+	  if(Var.Names[i]=="TeNorm"){
+	    IndexStim2<-which(GroupData[,"CycleID"]=="StimulationExp")
+	  }
+	  
+    #Stim
+    GroupData_StimVar<-GroupData[IndexStim,Var.Names[i]]
+    GroupData_StimPhase<-GroupData[IndexStim,"PhaseStim"]
+    
+    plot(x=GroupData_StimPhase,y=GroupData_StimVar,xlim=c(0,1.3),ylim=c(0,2.5),xlab=expression("Phase of stimulation: "*phi*""),ylab=Var.Names[i],main="Stim AllFreq",pch=20,col="gray60")	
+		abline(h=MeanNoStimVar+CINoStimVar,col="gray38",lty=1,lwd=3)
+	  abline(h=MeanNoStimVar-CINoStimVar,col="gray38",lty=1,lwd=3)
+    
+	  
+    ########### >=2.5 vs <2.5
+	  #freq>=2.5
+    IndexBaselineHighFreqA<-which(GroupData[,"CycleID2"]=="Cycle-1" & GroupData[,"period"]<=0.4)
+    IndexStimHighFreqA<-IndexBaselineHighFreqA+1
+
+   	#NoStim
+    GroupData_NoStimVar_HighFreq<-GroupData[IndexBaselineHighFreqA,Var.Names[i]]
+    PulseOnset<-GroupData[(IndexStimHighFreqA),"PhaseStim"]*GroupData[(IndexBaselineHighFreqA),"period"]  #Time after BegInsp
+    PulseStart_Nostim<- GroupData[IndexBaselineHighFreqA,"BegInsp"]+ PulseOnset
+    GroupData_NoStimPhase_HighFreq<-(PulseStart_Nostim-GroupData[IndexBaselineHighFreqA,"BegInsp"])/GroupData[(IndexBaselineHighFreqA-1),"period"]
+    
+    MeanNoStimVar_HighFreq<- mean(GroupData_NoStimVar_HighFreq,na.rm=TRUE)
+    CINoStimVar_HighFreq<- 2*sd(GroupData_NoStimVar_HighFreq,na.rm=TRUE)
+    print(paste("HighFreq-Mean:",MeanNoStimVar_HighFreq,"+/-CI",CINoStimVar_HighFreq))
+
+    plot(x=GroupData_NoStimPhase_HighFreq,y=GroupData_NoStimVar_HighFreq,xlim=c(0,1.3),ylim=c(0,2.5),xlab=expression("Phase of stimulation: "*phi*""),ylab=Var.Names[i],main="NoStim HighFreq",pch=20,col="gray60")	
+    abline(h=MeanNoStimVar_HighFreq+CINoStimVar_HighFreq,col="gray38",lty=1,lwd=3)
+	  abline(h=MeanNoStimVar_HighFreq-CINoStimVar_HighFreq,col="gray38",lty=1,lwd=3)
+	  
+	  #Stim
+    GroupData_StimVar_HighFreq<-GroupData[IndexStimHighFreqA,Var.Names[i]]
+    GroupData_StimPhase_HighFreq<-GroupData[IndexStimHighFreqA,"PhaseStim"]
+    
+    plot(x=GroupData_StimPhase_HighFreq,y=GroupData_StimVar_HighFreq,xlim=c(0,1.3),ylim=c(0,2.5),xlab=expression("Phase of stimulation: "*phi*""),ylab=Var.Names[i],main="Stim HighFreq",pch=20,col="gray60")	
+		abline(h=MeanNoStimVar_HighFreq+CINoStimVar_HighFreq,col="gray38",lty=1,lwd=3)
+	  abline(h=MeanNoStimVar_HighFreq-CINoStimVar_HighFreq,col="gray38",lty=1,lwd=3)
+	  
+	  
+	  ### No Stim Insp or No Stim Exp
+	  if(Var.Names[i]=="TiNorm" | Var.Names[i]=="AmplitudeNorm" ){
+      IndexStimHighFreqB<-which(GroupData[,"CycleID"]=="StimulationInsp")
+      IndexBaselineHighFreqB<-IndexStimHighFreqB-1
+    }
+    if(Var.Names[i]=="TeNorm"){
+      IndexStimHighFreqB<-which(GroupData[,"CycleID"]=="StimulationExp")
+      IndexBaselineHighFreqB<-IndexStimHighFreqB-1
+    }
+    IndexBaselineHighFreq<-IndexBaselineHighFreqA[(IndexBaselineHighFreqA %in% IndexBaselineHighFreqB)]
+	  IndexStimHighFreq<-IndexStimHighFreqA[(IndexStimHighFreqA %in% IndexStimHighFreqB)]
+	  
+	  GroupData_NoStimVar_HighFreqB<-GroupData[IndexBaselineHighFreq,Var.Names[i]]
+	  #All breaths bellow or above 95% CI; No stim 
+    print("NoStimInsp/ExpHighFreq:%BreathsSignificant:")
+    BreathsBellowAbove<-subset(GroupData_NoStimVar_HighFreqB,GroupData_NoStimVar_HighFreqB< MeanNoStimVar_HighFreq - CINoStimVar_HighFreq | GroupData_NoStimVar_HighFreqB>MeanNoStimVar_HighFreq+CINoStimVar_HighFreq)
+	  print(length(BreathsBellowAbove)/length(GroupData_NoStimVar_HighFreqB)*100)
+	 print("NoStimInsp/ExpHighFreq:%BreathsAboveSignificant:")
+    BreathsAbove<-subset(GroupData_NoStimVar_HighFreqB,GroupData_NoStimVar_HighFreqB>MeanNoStimVar_HighFreq+CINoStimVar_HighFreq)
+	  print(length(BreathsAbove)/length(GroupData_NoStimVar_HighFreqB)*100)
+	 print("NoStimInsp/ExpHighFreq:%BreathsBellowSignificant:")
+    BreathsBellow<-subset(GroupData_NoStimVar_HighFreqB,GroupData_NoStimVar_HighFreqB< MeanNoStimVar_HighFreq - CINoStimVar_HighFreq)
+	  print(length(BreathsBellow)/length(GroupData_NoStimVar_HighFreqB)*100)
+
+	  GroupData_StimVar_HighFreqB<-GroupData[IndexStimHighFreq,Var.Names[i]]
+	  #All breaths bellow or above 95% CI; No stim 
+    print("StimInsp/ExpHighFreq:%BreathsSignificant:")
+    BreathsBellowAbove<-subset(GroupData_StimVar_HighFreqB,GroupData_StimVar_HighFreqB<MeanNoStimVar_HighFreq - CINoStimVar_HighFreq | GroupData_StimVar_HighFreqB>MeanNoStimVar_HighFreq+CINoStimVar_HighFreq)
+	  print(length(BreathsBellowAbove)/length(GroupData_StimVar_HighFreqB)*100)
+	 print("StimInsp/ExpHighFreq:%BreathsAboveSignificant:")
+    BreathsAbove<-subset(GroupData_StimVar_HighFreqB, GroupData_StimVar_HighFreqB>MeanNoStimVar_HighFreq+CINoStimVar_HighFreq)
+	  print(length(BreathsAbove)/length(GroupData_StimVar_HighFreqB)*100)
+	  print("StimInsp/ExpHighFreq:%BreathsBellowSignificant:")
+    BreathsBellow<-subset(GroupData_StimVar_HighFreqB,GroupData_StimVar_HighFreqB<MeanNoStimVar_HighFreq - CINoStimVar_HighFreq)
+	  print(length(BreathsBellow)/length(GroupData_StimVar_HighFreqB)*100)
+	  
+	  #freq<2.5
+    IndexBaselineLowFreqA<-which(GroupData[,"CycleID2"]=="Cycle-1" & GroupData[,"period"]>0.4)
+    IndexStimLowFreqA<-IndexBaselineLowFreqA+1
+
+   	#NoStim
+    GroupData_NoStimVar_LowFreq<-GroupData[IndexBaselineLowFreqA,Var.Names[i]]
+    PulseOnset<-GroupData[(IndexStimLowFreqA),"PhaseStim"]*GroupData[(IndexBaselineLowFreqA),"period"]  #Time after BegInsp
+    PulseStart_Nostim<- GroupData[IndexBaselineLowFreqA,"BegInsp"]+ PulseOnset
+    GroupData_NoStimPhase_LowFreq<-(PulseStart_Nostim-GroupData[IndexBaselineLowFreqA,"BegInsp"])/GroupData[(IndexBaselineLowFreqA-1),"period"]
+    
+    MeanNoStimVar_LowFreq<- mean(GroupData_NoStimVar_LowFreq,na.rm=TRUE)
+    CINoStimVar_LowFreq<- 2*sd(GroupData_NoStimVar_LowFreq,na.rm=TRUE)
+    print(paste("LowFreq-Mean:",MeanNoStimVar_LowFreq,"+/-CI",CINoStimVar_LowFreq))
+
+    plot(x=GroupData_NoStimPhase_LowFreq,y=GroupData_NoStimVar_LowFreq,xlim=c(0,1.3),ylim=c(0,2.5),xlab=expression("Phase of stimulation: "*phi*""),ylab=Var.Names[i],main="NoStim LowFreq",pch=20,col="gray60")	
+    abline(h=MeanNoStimVar_LowFreq+CINoStimVar_LowFreq,col="gray38",lty=1,lwd=3)
+	  abline(h=MeanNoStimVar_LowFreq-CINoStimVar_LowFreq,col="gray38",lty=1,lwd=3)
+	  
+	  #Stim
+    GroupData_StimVar_LowFreq<-GroupData[IndexStimLowFreqA,Var.Names[i]]
+    GroupData_StimPhase_LowFreq<-GroupData[IndexStimLowFreqA,"PhaseStim"]
+    
+    plot(x=GroupData_StimPhase_LowFreq,y=GroupData_StimVar_LowFreq,xlim=c(0,1.3),ylim=c(0,2.5),xlab=expression("Phase of stimulation: "*phi*""),ylab=Var.Names[i],main="Stim LowFreq",pch=20,col="gray60")	
+		abline(h=MeanNoStimVar_LowFreq+CINoStimVar_LowFreq,col="gray38",lty=1,lwd=3)
+	  abline(h=MeanNoStimVar_LowFreq-CINoStimVar_LowFreq,col="gray38",lty=1,lwd=3)
+	  
+	  ### No Stim Insp or No Stim Exp
+	  if(Var.Names[i]=="TiNorm" | Var.Names[i]=="AmplitudeNorm" ){
+      IndexStimLowFreqB<-which(GroupData[,"CycleID"]=="StimulationInsp")
+      IndexBaselineLowFreqB<-IndexStimLowFreqB-1
+    }
+    if(Var.Names[i]=="TeNorm"){
+      IndexStimLowFreqB<-which(GroupData[,"CycleID"]=="StimulationExp")
+      IndexBaselineLowFreqB<-IndexStimLowFreqB-1
+    }
+    IndexBaselineLowFreq<-IndexBaselineLowFreqA[(IndexBaselineLowFreqA %in% IndexBaselineLowFreqB)]
+	  IndexStimLowFreq<-IndexStimLowFreqA[(IndexStimLowFreqA %in% IndexStimLowFreqB)]
+	  
+	  GroupData_NoStimVar_LowFreqB<-GroupData[IndexBaselineLowFreq,Var.Names[i]]
+	  #All breaths bellow or above 95% CI; No stim 
+    print("NoStimInsp/ExpLowFreq:%BreathsSignificant:")
+    BreathsBellowAbove<-subset(GroupData_NoStimVar_LowFreqB,GroupData_NoStimVar_LowFreqB< MeanNoStimVar_LowFreq - CINoStimVar_LowFreq | GroupData_NoStimVar_LowFreqB>MeanNoStimVar_LowFreq+CINoStimVar_LowFreq)
+	  print(length(BreathsBellowAbove)/length(GroupData_NoStimVar_LowFreqB)*100)
+	 print("NoStimInsp/ExpLowFreq:%BreathsAboveSignificant:")
+    BreathsAbove<-subset(GroupData_NoStimVar_LowFreqB,GroupData_NoStimVar_LowFreqB>MeanNoStimVar_LowFreq+CINoStimVar_LowFreq)
+	  print(length(BreathsAbove)/length(GroupData_NoStimVar_LowFreqB)*100)
+	 print("NoStimInsp/ExpLowFreq:%BreathsBellowSignificant:")
+    BreathsBellow<-subset(GroupData_NoStimVar_LowFreqB,GroupData_NoStimVar_LowFreqB< MeanNoStimVar_LowFreq - CINoStimVar_LowFreq)
+	  print(length(BreathsBellow)/length(GroupData_NoStimVar_LowFreqB)*100)
+
+	  GroupData_StimVar_LowFreqB<-GroupData[IndexStimLowFreq,Var.Names[i]]
+	  #All breaths bellow or above 95% CI; No stim 
+    print("StimInsp/ExpLowFreq:%BreathsSignificant:")
+    BreathsBellowAbove<-subset(GroupData_StimVar_LowFreqB,GroupData_StimVar_LowFreqB<MeanNoStimVar_LowFreq - CINoStimVar_LowFreq | GroupData_StimVar_LowFreqB>MeanNoStimVar_LowFreq+CINoStimVar_LowFreq)
+	  print(length(BreathsBellowAbove)/length(GroupData_StimVar_LowFreqB)*100)
+	 print("StimInsp/ExpLowFreq:%BreathsAboveSignificant:")
+    BreathsAbove<-subset(GroupData_StimVar_LowFreqB, GroupData_StimVar_LowFreqB>MeanNoStimVar_LowFreq+CINoStimVar_LowFreq)
+	  print(length(BreathsAbove)/length(GroupData_StimVar_LowFreqB)*100)
+	  print("StimInsp/ExpLowFreq:%BreathsBellowSignificant:")
+    BreathsBellow<-subset(GroupData_StimVar_LowFreqB,GroupData_StimVar_LowFreqB<MeanNoStimVar_LowFreq - CINoStimVar_LowFreq)
+	  print(length(BreathsBellow)/length(GroupData_StimVar_LowFreqB)*100)
+	  
+	  #### Histograms
+	  cut.Var<-seq(0,4,by=0.2)
+	  print(cut.Var)
+	  #NoStim Low vs High
+	  Table_NoStim_HighFreq<-hist(GroupData_NoStimVar_HighFreqB, cut.Var, plot = FALSE)
+    NoStim_HighFreq_Perc<-Table_NoStim_HighFreq$counts/sum(Table_NoStim_HighFreq$counts)*100
+    NoStim_HighFreq_ID<-rep("HighFreq",length(cut.Var)-1)
+  
+    Table_NoStim_LowFreq<-hist(GroupData_NoStimVar_LowFreqB, cut.Var, plot = FALSE)
+    NoStim_LowFreq_Perc<-Table_NoStim_LowFreq$counts/sum(Table_NoStim_LowFreq$counts)*100
+    NoStim_LowFreq_ID<-rep("LowFreq",length(cut.Var)-1)
+    
+    Mydata<-list(Perc=c(NoStim_LowFreq_Perc,NoStim_HighFreq_Perc),ID=c(NoStim_LowFreq_ID,NoStim_HighFreq_ID),Bin=c(cut.Var[1:length(cut.Var)-1],cut.Var[1:length(cut.Var)-1]))
+    Mydata$ID<-factor(Mydata$ID,levels=c("LowFreq","HighFreq"))
+    Mydata$Bin<-factor(Mydata$Bin)
+    Mydata<-data.frame(Mydata)
+
+    # Create stacked bar graphs with labels
+    g1<-ggplot(Mydata, aes(x = Bin, y = Perc, width=0.8)) + geom_bar(aes( color=ID, fill = ID), stat = "identity",position="dodge")+ scale_color_manual(values = c("black", "black")) + scale_fill_manual(values = c("white", "black"))+ theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+ labs(title=paste("NoStim:Low vs High Freq",Var.Names[i])) 
+    print(g1)
+    
+    #Stim Low vs High
+	  Table_Stim_HighFreq<-hist(GroupData_StimVar_HighFreqB, cut.Var, plot = FALSE)
+    Stim_HighFreq_Perc<-Table_Stim_HighFreq$counts/sum(Table_Stim_HighFreq$counts)*100
+    Stim_HighFreq_ID<-rep("HighFreq",length(cut.Var)-1)
+  
+    Table_Stim_LowFreq<-hist(GroupData_StimVar_LowFreqB, cut.Var, plot = FALSE)
+    Stim_LowFreq_Perc<-Table_Stim_LowFreq$counts/sum(Table_Stim_LowFreq$counts)*100
+    Stim_LowFreq_ID<-rep("LowFreq",length(cut.Var)-1)
+    
+    Mydata<-list(Perc=c(Stim_LowFreq_Perc,Stim_HighFreq_Perc),ID=c(Stim_LowFreq_ID,Stim_HighFreq_ID),Bin=c(cut.Var[1:length(cut.Var)-1],cut.Var[1:length(cut.Var)-1]))
+    Mydata$ID<-factor(Mydata$ID,levels=c("LowFreq","HighFreq"))
+    Mydata$Bin<-factor(Mydata$Bin)
+    Mydata<-data.frame(Mydata)
+
+    # Create stacked bar graphs with labels
+    g1<-ggplot(Mydata, aes(x = Bin, y = Perc, width=0.8)) + geom_bar(aes( color=ID, fill = ID), stat = "identity",position="dodge")+ scale_color_manual(values = c("black", "black")) + scale_fill_manual(values = c("white", "black"))+ theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+ labs(title=paste("Stim:Low vs High Freq",Var.Names[i])) 
+    print(g1)
+    
+	}
+  dev.off()
+}
+Analyses_NoStim_Stim_PRC()
+```
+
+Function (GroupData_Spikes)
+1. Compiles data
+2. Plots individual points vs. phase (Pre and Stim)
+```{r}
+GroupData_Spikes<-function(Bin,UnitType,Filename){
+  print(Sys.time())
+  print(UnitType)
+	ListFiles<-read.table(Filename,colClasses=c(rep("character",5)),header=T,dec=".",sep="\t")
+	print(c("#Animals:",length(unique(ListFiles$AnimalID))))
+	GroupData<-c()
+	for (i in 1:nrow(ListFiles)){
+		print(ListFiles[i,"FileName"])
+		filei<-read.table(ListFiles[i,"FileName"],header=T,sep=",",dec=".")
+		file1<-cbind(filei,rep(ListFiles[i,"FileName"],nrow(filei)),rep(ListFiles[i,"AnimalID"],nrow(filei)),rep(ListFiles[i,"Injection"],nrow(filei)),rep(ListFiles[i,"Type"],nrow(filei)),rep(ListFiles[i,"Coordinates"],nrow(filei)))
+		GroupData<-rbind(GroupData,file1)
+	}
+	colnames(GroupData)<-c(colnames(filei),colnames(ListFiles))		
+	control.GroupData<-subset(GroupData,GroupData$CycleID2=="Cycle-1")
+
+	plotname<-paste("Group_SpikesAnalysis_",UnitType,".pdf",sep="")
+	pdf(plotname)
+	
+	SelectedEvents<-GroupData
+	SelectedEvents[,"SubGroupInterval"]<-c(rep(NA,nrow(SelectedEvents)))
+	SelectedEvents[,"SubGroup"]<-c(rep(NA,nrow(SelectedEvents)))
+	bin.phase<-Bin
+	sel.PhaseStim<-subset(SelectedEvents,SelectedEvents$PhaseStim>=0)
+	cut.PhaseStim<-seq(0,max(sel.PhaseStim$PhaseStim),by=bin.phase)
+	
+	for(j in 1:(length(cut.PhaseStim)-1)){
+		index.bin<-which(SelectedEvents$PhaseStim>=cut.PhaseStim[j] & SelectedEvents$PhaseStim<cut.PhaseStim[j+1] & SelectedEvents$PhaseStim != "NA")
+		index.bin2<-which(SelectedEvents$PhaseStim_Control>=cut.PhaseStim[j] & SelectedEvents$PhaseStim_Control<cut.PhaseStim[j+1] & SelectedEvents$PhaseStim_Control != "NA")
+		if(j==(length(cut.PhaseStim)-1)){
+			index.bin<-which(SelectedEvents$PhaseStim>=cut.PhaseStim[j] & SelectedEvents$PhaseStim<=1.5)
+			index.bin2<-which(SelectedEvents$PhaseStim_Control>=cut.PhaseStim[j] & SelectedEvents$PhaseStim_Control<=1.5)
+		}
+		SelectedEvents[index.bin,"SubGroupInterval"]<-paste("[",cut.PhaseStim[j],"-",cut.PhaseStim[j+1],"[",sep="")
+		SelectedEvents[index.bin,"SubGroup"]<-j
+		SelectedEvents[index.bin2,"SubGroup"]<-j
+	}
+	write.table(SelectedEvents,paste("SelectedEventsFinal",UnitType,"-Bin",Bin,".txt",sep=""),sep=",",dec=".",row.names=FALSE)
+	
+	print("Subgroups for PhaseStim:")
+	print(cut.PhaseStim)
+	print(table(SelectedEvents[,"SubGroup"]))
+
+	stim.index<-which(SelectedEvents[,"PhaseStim"]>=0)
+	Stim.Events<-SelectedEvents[stim.index,]
+	data1<-Stim.Events
+	contr.index<-which(SelectedEvents[,"PhaseStim_Control"]>=0)
+	Contr.Events<-SelectedEvents[contr.index,]
+	data2<-Contr.Events
+
+	#Stimulation: Phase vs SpikeCount
+	g3<-ggplot(data1,aes(x=PhaseStim,y=SpikesStim)) + geom_point(colour="blue") + xlim(0,1.2)+ ylim(0,40) + labs(title="Stim",y="Spike Count",x=expression("Phase of stimulation: "*phi*""))+theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+	print(g3)
+	
+	#Stimulation: Phase vs SpikeOnset
+	g5<-ggplot(data1,aes(x=PhaseStim,y=TimetoFirstSpike)) + geom_point(colour="blue")+ xlim(0,1.2) + ylim(0,1) + labs(title="Stim",y="Spike Onset (s)",x=expression("Phase of stimulation: "*phi*""))+theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+	print(g5)
+	
+	#Control: Phase vs SpikeCount
+	g7<-ggplot(data2,aes(x=PhaseStim_Control,y=SpikesControl)) + geom_point()+ xlim(0,1.2) + ylim(0,40)+ labs(title="Control",y="Spike Count",x=expression("Phase of stimulation: "*phi*""))+theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+	print(g7)
+	#Control: Phase vs SpikeOnset
+	g9<-ggplot(data2,aes(x=PhaseStim_Control,y=TimetoFirstSpike)) + geom_point()+ xlim(0,1.2) + ylim(0,1)+ labs(title="Control",y="Spike Onset (s)",x=expression("Phase of stimulation: "*phi*""))+theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+  print(g9)
+  
+	dev.off()
+}
+GroupData_Spikes(0.2,"Insp","SpikesList-Insp.txt")
+```
+
+Function (Stats_Spikes)
+1. Plots for Fig 6C: inspiratory Units count and onset
+2. Stata
+```{r}
+Stats_Spikes<-function(UnitType,Filename){
+	print(Sys.time())
+  print(UnitType)
+	BinFilei<-read.table(Filename,header=T,sep="\t",dec=".")
+	print(table(BinFilei$SubGroup))
+	
+	BinFilei$CycleID_adj[BinFilei$CycleID == "No Stimulation"] <- -0.2
+	BinFilei$CycleID_adj[BinFilei$CycleID == "Stimulation"] <- 0.2
+	
+	plotname<-paste("Group_SpikesAnalysis_Final",UnitType,".pdf",sep="")
+	pdf(plotname)
+	
+  #Boxplots
+	#Count vs. Phase
+	g2<-ggplot(BinFilei,aes(x=factor(SubGroup),y=SpikeCount,fill=factor(CycleID))) + geom_boxplot(outlier.shape=NA)+ scale_fill_manual(values=c("white", "blue"))+ geom_jitter(aes(x=SubGroup+CycleID_adj,y=SpikeCount),size=0.9,position=position_jitter(width=0.1,height=0)) + stat_summary(fun=mean,size=3.5,shape=18,col="red", geom='point',position=position_dodge(width=0.75)) + ylim(0,40)+ ylab("Spike Count") + xlab(expression("Phase of stimulation: "*phi*"")) + labs(title = "Control vs. Stim")+theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+  print(g2)
+
+  #Onset vs. Phase
+	g3<-ggplot(BinFilei,aes(x=factor(SubGroup),y=SpikeOnset,fill=factor(CycleID))) + geom_boxplot(outlier.shape=NA)+ scale_fill_manual(values=c("white", "blue"))+ geom_jitter(aes(x=SubGroup+CycleID_adj,y=SpikeOnset),size=0.9,position=position_jitter(width=0.1,height=0))+ stat_summary(fun=mean,size=3.5,shape=18,col="red", geom='point',position=position_dodge(width=0.75)) + ylim(0,1)+ ylab("Spike Onset") + xlab(expression("Phase of stimulation: "*phi*"")) + labs(title = "Control vs. Stim")+theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+  print(g3)
+
+	dev.off()
+	
+  #Stats Spike Count
+	Unique_SubGroup<-sort(unique(BinFilei$SubGroup))
+	for (i in 1:length(Unique_SubGroup)){
+	  print(paste("SubGroup:",Unique_SubGroup[i],sep=""))
+	  BinFilei_sub<-subset(BinFilei,BinFilei$SubGroup==Unique_SubGroup[i])
+	  print(
+	  group_by(BinFilei_sub, CycleID) %>%
+      dplyr::summarise(
+      count = n(),
+      mean = mean(SpikeCount, na.rm = TRUE),
+      SD = sd(SpikeCount, na.rm = TRUE),
+      median = median(SpikeCount, na.rm = TRUE),
+      IQR = IQR(SpikeCount, na.rm = TRUE)
+    ))
+
+    print(wilcox.test(SpikeCount~CycleID,data=BinFilei_sub,paired=F,alternative = "two.sided",correct=F,exact=T,conf.int = TRUE))
+	}
+	
+	#Stats Onset
+	Unique_SubGroup<-sort(unique(BinFilei$SubGroup))
+	for (i in 1:length(Unique_SubGroup)){
+	  print(paste("SubGroup:",Unique_SubGroup[i],sep=""))
+	  BinFilei_sub<-subset(BinFilei,BinFilei$SubGroup==Unique_SubGroup[i])
+	  #print(BinFilei_sub)
+	  print(
+	  group_by(BinFilei_sub, CycleID) %>%
+      dplyr::summarise(
+      count = n(),
+      mean = mean(SpikeOnset, na.rm = TRUE),
+      SD = sd(SpikeOnset, na.rm = TRUE),
+      median = median(SpikeOnset, na.rm = TRUE),
+      IQR = IQR(SpikeOnset, na.rm = TRUE)
+    ))
+
+    print(wilcox.test(SpikeOnset~CycleID,data=BinFilei_sub,paired=F,alternative = "two.sided",correct=F,exact=T,conf.int = TRUE))
+	}
+}
+
+Stats_Spikes("Insp","SelectedEventsFinalInsp-Bin0.2_ForStats.txt")
+```
+
+### Part 2: Awake mice: 1s photostimulation
+Function (Awake_GroupDiffConditions_RespiratoryVariables)
+1. Calculates Tdelay, Duration, Amplitude for 1st, 2nd, 3rd, etc peaks after pulse (Prev, Stim, and Post)
+2. Output: Tdelay&Duration&Amplitude.csv and CoefficientVariation.csv
+```{r}
+Awake_GroupDiffConditions_RespiratoryVariables<-function(PulseDuration){
+  print(Sys.time())
+	ListFilesAF<-read.table("1sNormoxiaHypoxiaHypercapniaList-AFPeaks.txt",colClasses=rep("character",4),header=T,dec=".",sep="\t") #Time,Airflow,Comment #1 Event Marker; Add line1: NA,NA,NA
+	ListFilesLaserBeg<-read.table("1sNormoxiaHypoxiaHypercapniaList-LaserBeg.txt",colClasses=rep("character",4),header=T,dec=".",sep="\t") #Time,Laser,Comment #1 Event Marker; Add line1: NA,NA,NA	
+	Datapoints<-nrow(ListFilesAF)
+	Prev<-c()
+	Stim<-c()
+	After<-c()
+
+	CVPrev<-c()
+	CVStim<-c()
+	CVAfter<-c()
+	
+	for(i in 1:Datapoints){
+	  Prev.Datapoint<-c()
+	  Stim.Datapoint<-c()
+	  After.Datapoint<-c()
+	  
+		#print(ListFilesLaserBeg[i,1])
+		BegPulse<-read.table(ListFilesLaserBeg[i,1],header=F,dec=".",sep="\t",comment.char="",fill=TRUE)	
+		BegPulseSel<-subset(BegPulse,BegPulse[,3]!="")
+		BegStim<-BegPulseSel[1,1] #Start pulse
+	  BegPrev<-BegPulseSel[1,1]-2*PulseDuration # Start Before
+	  BegAfter<-BegPulseSel[1,1]+PulseDuration # Start After
+ 
+  	Airflow<-read.table(ListFilesAF[i,1],header=F,dec=".",sep="\t",comment.char="",fill=TRUE)
+		#print(isTRUE(Airflow[2,1]==BegPulse[2,1]))
+		Events<-subset(Airflow,Airflow[,3]!="")
+		StimEvents<-subset(Events,Events[,1]>= BegStim & Events[,1]< (BegStim+PulseDuration))
+		PrevEvents<-subset(Events,Events[,1]>= BegPrev & Events[,1]< (BegPrev+PulseDuration))
+		AfterEvents<-subset(Events,Events[,1]>= BegAfter & Events[,1]< (BegAfter+PulseDuration))
+
+		if (nrow(PrevEvents)>0){
+		  for(j in 1:nrow(PrevEvents)){ 
+		    PrevCycles<-subset(Events,Events[,1]< PrevEvents[j,1])
+		    PrevCycles<-PrevCycles[nrow(PrevCycles),1]
+			  Prev<-rbind(Prev,c(j,PrevEvents[j,1]-BegPrev,PrevEvents[j,1]-PrevCycles,PrevEvents[j,2],ListFilesAF[i,"AnimalID"],ListFilesAF[i,"Condition"],ListFilesAF[i,"FileName"],"Prev"))
+			  Prev.Datapoint<-rbind(Prev.Datapoint,c(j,PrevEvents[j,1]-BegPrev,PrevEvents[j,1]-PrevCycles,PrevEvents[j,2])) #Tdelay, duration, Amp
+		  }
+		}
+
+		if (nrow(StimEvents)>0){
+		  for(j in 1:nrow(StimEvents)){
+		    PrevCycles<-subset(Events,Events[,1]< StimEvents[j,1])
+		    PrevCycles<-PrevCycles[nrow(PrevCycles),1]
+			  Stim<-rbind(Stim,c(j,StimEvents[j,1]-BegStim,StimEvents[j,1]-PrevCycles,StimEvents[j,2],ListFilesAF[i,"AnimalID"],ListFilesAF[i,"Condition"],ListFilesAF[i,"FileName"],"Stim"))
+			  Stim.Datapoint<-rbind(Stim.Datapoint,c(j,StimEvents[j,1]-BegStim,StimEvents[j,1]-PrevCycles,StimEvents[j,2]))
+		  }
+		}
+
+		if (nrow(AfterEvents)>0){
+		  for(j in 1:nrow(AfterEvents)){
+		    PrevCycles<-subset(Events,Events[,1] < AfterEvents[j,1])
+		    PrevCycles<-PrevCycles[nrow(PrevCycles),1]
+			  After<-rbind(After,c(j,AfterEvents[j,1]-BegAfter,AfterEvents[j,1]-PrevCycles,AfterEvents[j,2],ListFilesAF[i,"AnimalID"],ListFilesAF[i,"Condition"],ListFilesAF[i,"FileName"],"After"))
+			  After.Datapoint<-rbind(After.Datapoint,c(j,AfterEvents[j,1]-BegAfter,AfterEvents[j,1]-PrevCycles,AfterEvents[j,2]))
+		  }
+		}
+
+		if(length(Prev.Datapoint)!=0){
+		  if(max(Prev.Datapoint[,1])>2){
+		    CVTdelayPrev.Datapoint<-sd(Prev.Datapoint[,2])/mean(Prev.Datapoint[,2])
+		    CVDurationPrev.Datapoint<-sd(Prev.Datapoint[,3])/mean(Prev.Datapoint[,3])
+		    CVAmpPrev.Datapoint<-sd(Prev.Datapoint[,4])/mean(Prev.Datapoint[,4])
+		    CVPrev<-rbind(CVPrev,c(CVTdelayPrev.Datapoint,CVDurationPrev.Datapoint,CVAmpPrev.Datapoint,ListFilesAF[i,"AnimalID"],ListFilesAF[i,"Condition"],ListFilesAF[i,"FileName"],"Prev"))
+		  }
+		}
+
+		if(length(Stim.Datapoint)!=0){
+		  if(max(Stim.Datapoint[,1])>2){
+		    CVTdelayStim.Datapoint<-sd(Stim.Datapoint[,2])/mean(Stim.Datapoint[,2])
+		    CVDurationStim.Datapoint<-sd(Stim.Datapoint[,3])/mean(Stim.Datapoint[,3])
+		    CVAmpStim.Datapoint<-sd(Stim.Datapoint[,4])/mean(Stim.Datapoint[,4])
+		    CVStim<-rbind(CVStim,c(CVTdelayStim.Datapoint,CVDurationStim.Datapoint,CVAmpStim.Datapoint,ListFilesAF[i,"AnimalID"],ListFilesAF[i,"Condition"],ListFilesAF[i,"FileName"],"Stim"))
+		  }
+		}
+
+		if(length(After.Datapoint)!=0){
+		  if(max(After.Datapoint[,1])>2){
+		    CVTdelayAfter.Datapoint<-sd(After.Datapoint[,2])/mean(After.Datapoint[,2])
+		    CVDurationAfter.Datapoint<-sd(After.Datapoint[,3])/mean(After.Datapoint[,3])
+		    CVAmpAfter.Datapoint<-sd(After.Datapoint[,4])/mean(After.Datapoint[,4])
+		    CVAfter<-rbind(CVAfter,c(CVTdelayAfter.Datapoint,CVDurationAfter.Datapoint,CVAmpAfter.Datapoint,ListFilesAF[i,"AnimalID"],ListFilesAF[i,"Condition"],ListFilesAF[i,"FileName"],"After"))
+		  }
+		}
+	}	
+
+	Allmatrix<-rbind(Prev,Stim,After)
+	colnames(Allmatrix)<-c("PeakAfterStim","Tdelay","Duration","Amplitude","AnimalID","Condition","Filename","ID")
+	write.csv(Allmatrix,"Tdelay&Duration&Amplitude.csv",row.names=FALSE)
+	
+	CVmatrix<-rbind(CVPrev,CVStim,CVAfter)
+	colnames(CVmatrix)<-c("CVTdelay","CVDuration","CVAmplitude","AnimalID","Condition","Filename","ID")
+	write.csv(CVmatrix,"CoefficientVariation.csv",row.names=FALSE)
+}
+Awake_GroupDiffConditions_RespiratoryVariables(1)
+```
+
+Function (AwakeBreathsAnalysis)
+1. Plots and Stats for Figure 8
+```{r}
+AwakeBreathsAnalysis<-function(){
+  When<-c("Prev","Stim")
+  RespCondition<-c("Normoxia","Hypoxia","Hypercapnia")
+	Mydata<-read.csv("Tdelay&Duration&Amplitude.csv")
+	maxCycles<-4 #Max cycles in hypoxia
+	Mydata<-subset(Mydata,Mydata[,"PeakAfterStim"]<=maxCycles & Mydata[,"ID"]!="After")
+	Mydata$Condition<-factor(Mydata$Condition,levels=RespCondition)
+	Mydata$ID<-factor(Mydata$ID,levels=When)
+  Mydata$PeakAfterStim<-factor(Mydata$PeakAfterStim)
+
+	#Stats Kruskal/wilcox Each respiratory challenge: multiple comparison among respiratory cycles
+	for (i in 1:length(RespCondition)){
+	  print(paste("Stats:",RespCondition[i]))
+	  Mydata.sel<-subset(Mydata,Mydata[,"Condition"]==RespCondition[i])
+	  print("Stim")
+	  Mydata.sel2<-subset(Mydata.sel,Mydata.sel[,"ID"]=="Stim")
+	  
+	  print(kruskal.test(Amplitude ~ PeakAfterStim, data = Mydata.sel2))
+    print(pairwise.wilcox.test(Mydata.sel2$Amplitude,Mydata.sel2$PeakAfterStim,paired=F,alternative = "two.sided",correct=F,p.adjust.method = "BH"))
+  
+    print(kruskal.test(Tdelay ~ PeakAfterStim, data = Mydata.sel2))
+    print(pairwise.wilcox.test(Mydata.sel2$Tdelay,Mydata.sel2$PeakAfterStim,paired=F,alternative = "two.sided",correct=F,p.adjust.method = "BH"))
+
+    print(kruskal.test(Duration ~ PeakAfterStim, data = Mydata.sel2))
+    print(pairwise.wilcox.test(Mydata.sel2$Duration,Mydata.sel2$PeakAfterStim,paired=F,alternative = "two.sided",correct=F,p.adjust.method = "BH"))
+  
+	  
+	  print("Prev")
+	  Mydata.sel2<-subset(Mydata.sel,Mydata.sel[,"ID"]=="Prev")
+	  
+	  print(kruskal.test(Amplitude ~ PeakAfterStim, data = Mydata.sel2))
+    print(pairwise.wilcox.test(Mydata.sel2$Amplitude,Mydata.sel2$PeakAfterStim,paired=F,alternative = "two.sided",correct=F,p.adjust.method = "BH"))
+  
+    print(kruskal.test(Tdelay ~ PeakAfterStim, data = Mydata.sel2))
+    print(pairwise.wilcox.test(Mydata.sel2$Tdelay,Mydata.sel2$PeakAfterStim,paired=F,alternative = "two.sided",correct=F,p.adjust.method = "BH"))
+
+    print(kruskal.test(Duration ~ PeakAfterStim, data = Mydata.sel2))
+    print(pairwise.wilcox.test(Mydata.sel2$Duration,Mydata.sel2$PeakAfterStim,paired=F,alternative = "two.sided",correct=F,p.adjust.method = "BH"))
+    
+	}
+	  
+	#Stats wilcox Each respiratory challenge and each respiratory cycle: Stim vs No Stim
+	for (i in 1:length(RespCondition)){
+	  print(paste("Stats:",RespCondition[i]))
+	  Mydata.sel<-subset(Mydata,Mydata[,"Condition"]==RespCondition[i])  
+    for (p in 1:maxCycles){
+  	  print(paste("RespCycle#",p,sep=""))
+  	  Mydata.sel2<-subset(Mydata.sel,Mydata.sel[,"PeakAfterStim"]==p)
+  	  
+  	  print(wilcox.test(Amplitude ~ ID,data=Mydata.sel2,paired=F,alternative = "two.sided",correct=F,exact=T,conf.int = TRUE)) #Cycle-1 vs Stim
+  	  
+  	  print(wilcox.test(Tdelay ~ ID,data=Mydata.sel2,paired=F,alternative = "two.sided",correct=F,exact=T,conf.int = TRUE)) #Cycle-1 vs Stim
+  	  
+  	  print(wilcox.test(Duration ~ ID,data=Mydata.sel2,paired=F,alternative = "two.sided",correct=F,exact=T,conf.int = TRUE)) #Cycle-1 vs Stim
+  	  
+  	  
+    }
+	}  
+  	  
+	for (i in 1:length(RespCondition)){
+	  print(paste("Tdelay/",RespCondition[i]))
+	  Mydata.sel<-subset(Mydata,Mydata[,"Condition"]==RespCondition[i])
+	  tgc <- summarySE(Mydata.sel, measurevar="Tdelay", groupvars=c("ID","PeakAfterStim"))
+	  tgc2<- tgc[complete.cases(tgc), ]
+	  print(tgc2)
+	  
+	  if (RespCondition[i]=="Normoxia"){
+	    mycol="black"
+	    mycol2<-"gray"}
+	  if (RespCondition[i]=="Hypoxia"){
+	    mycol="forestgreen"
+	    mycol2=mycol}
+	  if (RespCondition[i]=="Hypercapnia"){
+	    mycol="magenta"
+	    mycol2=mycol}
+	  
+  	g2<-ggplot(Mydata.sel,aes(x=factor(PeakAfterStim),y=Tdelay,fill=ID)) + geom_boxplot(outlier.shape=NA,lwd=1.1) + stat_summary(fun=mean,size=3.5,shape=18,col="blue", geom='point',position=position_dodge(width=0.75))+ scale_fill_manual(values=c("white",mycol2)) + ylab("Tdelay") + xlab(expression("Peak")) + labs(title = RespCondition[i])+theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+  	 plotname<-paste(RespCondition[i],"-Tdelay-Boxplot.tiff",sep="")
+  	 #+ geom_jitter(size=0.7,position=position_jitterdodge(),alpha=1) 
+  	 ggsave(plotname, units="in", dpi=300)
+	}
+ 
+
+	for (i in 1:length(RespCondition)){
+	  print(paste("Duration/",RespCondition[i]))
+	  Mydata.sel<-subset(Mydata,Mydata[,"Condition"]==RespCondition[i])
+	  tgc <- summarySE(Mydata.sel, measurevar="Duration", groupvars=c("ID","PeakAfterStim"))
+	  tgc2<- tgc[complete.cases(tgc), ]
+	  print(tgc2)
+	  
+	  if (RespCondition[i]=="Normoxia"){
+	    mycol="black"
+	    mycol2<-"gray"}
+	  if (RespCondition[i]=="Hypoxia"){
+	    mycol="forestgreen"
+	    mycol2=mycol}
+	  if (RespCondition[i]=="Hypercapnia"){
+	    mycol="magenta"
+	    mycol2=mycol}
+  	
+  	g2<-ggplot(Mydata.sel,aes(x=factor(PeakAfterStim),y=Duration,fill=ID)) + geom_boxplot(outlier.shape=NA,lwd=1.1) + stat_summary(fun=mean,size=3.5,shape=18,col="blue", geom='point',position=position_dodge(width=0.75))+ scale_fill_manual(values=c("white",mycol2)) + ylab("Duration") + xlab(expression("Peak")) + labs(title = RespCondition[i])+theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+ ylim(0,1.65)
+  	#+ geom_jitter(size=0.7,position=position_jitterdodge(),alpha=1) 
+  	plotname<-paste(RespCondition[i],"-BreathDuration-Boxplot.tiff",sep="")
+  	ggsave(plotname, units="in", dpi=300)
+  	 
+	}
+	
+	for (i in 1:length(RespCondition)){
+	  print(paste("Amplitude/",RespCondition[i]))
+	  Mydata.sel<-subset(Mydata,Mydata[,"Condition"]==RespCondition[i])
+	  tgc <- summarySE(Mydata.sel, measurevar="Amplitude", groupvars=c("ID","PeakAfterStim"))
+	  tgc2<- tgc[complete.cases(tgc), ]
+	  print(tgc2)
+	  
+	  if (RespCondition[i]=="Normoxia"){
+	    mycol="black"
+	    mycol2="gray"}
+	  if (RespCondition[i]=="Hypoxia"){
+	    mycol="forestgreen"
+	    mycol2=mycol}
+	  if (RespCondition[i]=="Hypercapnia"){
+	    mycol="magenta"
+	    mycol2=mycol}
+  	
+  	g2<-ggplot(Mydata.sel,aes(x=factor(PeakAfterStim),y=Amplitude,fill=ID)) + geom_boxplot(outlier.shape=NA,lwd=1.1)  + stat_summary(fun=mean,size=3.5,shape=18,col="blue", geom='point',position=position_dodge(width=0.75)) + scale_fill_manual(values=c("white",mycol2)) + ylab("Amplitude") + xlab(expression("Peak")) + labs(title = RespCondition[i])+theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank())+ ylim(0,0.04)
+  	#+ geom_jitter(size=0.7,position=position_jitterdodge(),alpha=1)
+  	plotname<-paste(RespCondition[i],"-BreathAmplitude-Boxplot.tiff",sep="")
+  	ggsave(plotname, units="in", dpi=300)
+  	 
+	}
+
+  #Coefficient of variation
+  CV<-read.csv("CoefficientVariation.csv")
+  CV$Condition<-factor(CV$Condition,levels=c("Normoxia","Hypoxia","Hypercapnia"))
+	CV2<-subset(CV,CV[,"ID"]==When)
+	CV2$ID<-factor(CV2$ID,levels=When)
+	
+	
+	#Stats for each Resp Condition: Prev vs. Stim
+	for (i in 1:length(RespCondition)){
+	  print(paste("CV_Stats:",RespCondition[i]))
+	  CV2.sel<-subset(CV2,CV2[,"Condition"]==RespCondition[i])
+	  #print(CV2.sel)
+	  
+	  print(wilcox.test(CVAmplitude ~ ID,data=CV2.sel,paired=F,alternative = "two.sided",correct=F,exact=T,conf.int = TRUE)) #Cycle-1 vs Stim
+	  print(wilcox.test(CVTdelay ~ ID,data=CV2.sel,paired=F,alternative = "two.sided",correct=F,exact=T,conf.int = TRUE)) #Cycle-1 vs Stim
+	  print(wilcox.test(CVDuration ~ ID,data=CV2.sel,paired=F,alternative = "two.sided",correct=F,exact=T,conf.int = TRUE)) #Cycle-1 vs Stim
+	  
+	}  
+
+	#Stats among respiratory challenges
+  print("Stats_CV_Prev")
+  CV2_Prev<-subset(CV2,CV2$ID=="Prev")
+  
+  print(kruskal.test(CVTdelay ~ Condition, data = CV2_Prev))
+  print(pairwise.wilcox.test(CV2_Prev$CVTdelay,CV2_Prev$Condition,paired=F,alternative = "two.sided",correct=F,p.adjust.method = "BH"))
+  
+  print(kruskal.test(CVDuration ~ Condition, data = CV2_Prev))
+  print(pairwise.wilcox.test(CV2_Prev$CVDuration,CV2_Prev$Condition,paired=F,alternative = "two.sided",correct=F,p.adjust.method = "BH"))
+  
+  print(kruskal.test(CVAmplitude ~ Condition, data = CV2_Prev))
+  print(pairwise.wilcox.test(CV2_Prev$CVAmplitude,CV2_Prev$Condition,paired=F,alternative = "two.sided",correct=F,p.adjust.method = "BH"))
+  
+  
+  print("Stats_CV_Stim")
+  CV2_Stim<-subset(CV2,CV2$ID=="Stim")
+  
+  print(kruskal.test(CVTdelay ~ Condition, data = CV2_Stim))
+  print(pairwise.wilcox.test(CV2_Stim$CVTdelay,CV2_Stim$Condition,paired=F,alternative = "two.sided",correct=F,p.adjust.method = "BH"))
+  
+  print(kruskal.test(CVDuration ~ Condition, data = CV2_Stim))
+  print(pairwise.wilcox.test(CV2_Stim$CVDuration,CV2_Stim$Condition,paired=F,alternative = "two.sided",correct=F,p.adjust.method = "BH"))
+  
+  print(kruskal.test(CVAmplitude ~ Condition, data = CV2_Stim))
+  print(pairwise.wilcox.test(CV2_Stim$CVAmplitude,CV2_Stim$Condition,paired=F,alternative = "two.sided",correct=F,p.adjust.method = "BH"))
+  
+	#Plots
+	#CVTdelay
+	tgc <- summarySE(CV2, measurevar="CVTdelay", groupvars=c("Condition","ID"))
+	tgc2<- tgc[complete.cases(tgc), ]
+	print(tgc2)
+
+  g2<-ggplot(CV2,aes(x=ID,y=CVTdelay,fill=Condition,colour=Condition)) + geom_boxplot(outlier.shape=NA,lwd=1.1)  + stat_summary(fun=mean,size=2.5,shape=23,bg="grey", geom='point',position=position_dodge(width=0.75)) + scale_colour_manual(values=c("black","forestgreen","magenta")) + scale_fill_manual(values=c("white","white","white")) + ylab("CVTdelay") +theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + ylim(0,1)
+  #+ geom_jitter(size=0.7,position=position_jitterdodge(),alpha=1)
+  ggsave("CVTdelay-Boxplot.tiff", units="in", dpi=300)
+  
+  g3<-ggplot(CV2,aes(x=ID,y=CVTdelay,fill=Condition)) + geom_boxplot(outlier.shape=NA,lwd=1.1)  + stat_summary(fun=mean,size=3.5,shape=18,col="blue", geom='point',position=position_dodge(width=0.75))+ scale_fill_manual(values=c("grey","forestgreen","magenta"))+ ylab("CVTdelay") +theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + ylim(0,1)
+  #+ geom_jitter(size=0.7,position=position_jitterdodge(),alpha=1)
+  ggsave("CVTdelay-Boxplot2.tiff", units="in", dpi=300)
+
+  #CVDuration
+	tgc <- summarySE(CV2, measurevar="CVDuration", groupvars=c("Condition","ID"))
+	tgc2<- tgc[complete.cases(tgc), ]
+	print(tgc2)
+  g2<-ggplot(CV2,aes(x=ID,y=CVDuration,fill=Condition,colour=Condition)) + geom_boxplot(outlier.shape=NA,lwd=1.1)  + stat_summary(fun=mean,size=2.5,shape=23,bg="grey", geom='point',position=position_dodge(width=0.75)) + scale_colour_manual(values=c("black","forestgreen","magenta")) + scale_fill_manual(values=c("white","white","white")) + ylab("CVDuration") +theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + ylim(0,1)
+  #+ geom_jitter(size=0.7,position=position_jitterdodge(),alpha=1)
+  ggsave("CVBreathDuration-Boxplot.tiff", units="in", dpi=300)
+  
+  g3<-ggplot(CV2,aes(x=ID,y=CVDuration,fill=Condition)) + geom_boxplot(outlier.shape=NA,lwd=1.1) + stat_summary(fun=mean,size=3.5,shape=18,col="blue", geom='point',position=position_dodge(width=0.75))+ scale_fill_manual(values=c("grey","forestgreen","magenta"))+ ylab("CVDuration") +theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + ylim(0,1)
+  #+ geom_jitter(size=0.7,position=position_jitterdodge(),alpha=1) 
+  ggsave("CVBreathDuration-Boxplot2.tiff", units="in", dpi=300)
+  
+  #CVAmplitude
+  tgc <- summarySE(CV2, measurevar="CVAmplitude", groupvars=c("Condition","ID"))
+	tgc2<- tgc[complete.cases(tgc), ]
+	print(tgc2)
+  
+  g2<-ggplot(CV2,aes(x=ID,y=CVAmplitude,fill=Condition,colour=Condition)) + geom_boxplot(outlier.shape=NA,lwd=1.1)  + stat_summary(fun=mean,size=2.5,shape=23,bg="grey", geom='point',position=position_dodge(width=0.75)) + scale_colour_manual(values=c("black","forestgreen","magenta")) + scale_fill_manual(values=c("white","white","white")) + ylab("CVAmplitude") +theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + ylim(0,1)
+  #+ geom_jitter(size=0.7,position=position_jitterdodge(),alpha=1)
+  ggsave("CVBreathAmplitude-Boxplot.tiff", units="in", dpi=300)
+  
+  g3<-ggplot(CV2,aes(x=ID,y=CVAmplitude,fill=Condition)) + geom_boxplot(outlier.shape=NA,lwd=1.1) + stat_summary(fun=mean,size=3.5,shape=18,col="blue", geom='point',position=position_dodge(width=0.75))+ scale_fill_manual(values=c("grey","forestgreen","magenta"))+ ylab("CVAmplitude") +theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + ylim(0,1)
+  #+ geom_jitter(size=0.7,position=position_jitterdodge(),alpha=1) 
+  ggsave("CVBreathAmplitude-Boxplot2.tiff", units="in", dpi=300)
+}
+AwakeBreathsAnalysis()
+```
+
+Function (Awake_GroupDiffConditions_Frequency)
+1. Plot and Stats for Figure 9
+```{r}
+Awake_GroupDiffConditions_Frequency<-function(PulseDuration){
+  print(Sys.time())
+	ListFilesAF<-read.table("1sNormoxiaHypoxiaHypercapniaList-AFPeaks.txt",colClasses=rep("character",4),header=T,dec=".",sep="\t") #Time,Airflow,Comment #1 Event Marker; Add line1: NA,NA,NA
+	ListFilesLaserBeg<-read.table("1sNormoxiaHypoxiaHypercapniaList-LaserBeg.txt",colClasses=rep("character",4),header=T,dec=".",sep="\t") #Time,Laser,Comment #1 Event Marker; Add line1: NA,NA,NA		
+	Datapoints<-nrow(ListFilesAF)
+	PreviousFreq<-c()
+	DuringFreq<-c()
+	FollowingFreq<-c()
+	AnimalID<-c()
+	Condition<-c()
+	FileName<-c()
+	TimetoFirstAFPeakStim<-c()
+	TimetoFirstAFPeakPrev<-c()
+	TimetoFirstAFPeakAfter<-c()
+	for(i in 1:Datapoints){
+		#print(ListFilesLaserBeg[i,1])
+		BegPulse<-read.table(ListFilesLaserBeg[i,1],header=F,dec=".",sep="\t",comment.char="",fill=TRUE)	
+		BegPulseSel<-subset(BegPulse,BegPulse[,3]!="")
+		BegStim<-BegPulseSel[1,1] #Start pulse
+		BegStimPrev<-BegPulseSel[1,1]-2*PulseDuration # Start Before
+		BegStimAfter<-BegPulseSel[1,1]+PulseDuration # Start After
+
+		##Frequency Comparison 
+  	Airflow<-read.table(ListFilesAF[i,1],header=F,dec=".",sep="\t",comment.char="",fill=TRUE)
+		#print(isTRUE(Airflow[2,1]==BegPulse[2,1]))
+		Events<-subset(Airflow,Airflow[,3]!="")
+		
+		PreviousEvents<-subset(Events,Events[,1]>=BegStimPrev & Events[,1]<(BegStimPrev+PulseDuration))
+		PreviousFreq<-c(PreviousFreq,nrow(PreviousEvents)/PulseDuration)
+	
+		DuringEvents<-subset(Events,Events[,1]>=BegStim & Events[,1]<(BegStim+PulseDuration))
+		DuringFreq<-c(DuringFreq,nrow(DuringEvents)/PulseDuration)
+		
+		FollowingEvents<-subset(Events,Events[,1]>=BegStimAfter & Events[,1]<(BegStimAfter+PulseDuration))
+		FollowingFreq<-c(FollowingFreq,nrow(FollowingEvents)/PulseDuration)
+		
+		AnimalID<-c(AnimalID,ListFilesAF[i,"AnimalID"])
+		Condition<-c(Condition,ListFilesAF[i,"Condition"])
+		FileName<-c(FileName,ListFilesAF[i,"FileName"])
+	}
+	
+	PreviousFreq.Dataframe<-data.frame(Frequency=PreviousFreq,AnimalID=AnimalID,Condition=Condition,FileName=FileName)
+	PreviousFreq.Dataframe$ID<-"Control"
+	DuringFreq.Dataframe<-data.frame(Frequency=DuringFreq,AnimalID=AnimalID,Condition=Condition,FileName=FileName)
+	DuringFreq.Dataframe$ID<-"Stim"
+	FollowingFreq.Dataframe<-data.frame(Frequency=FollowingFreq,AnimalID=AnimalID,Condition=Condition,FileName=FileName)
+	FollowingFreq.Dataframe$ID<-"AfterStim"
+
+	Freq.Matrix<-rbind(PreviousFreq.Dataframe,DuringFreq.Dataframe,FollowingFreq.Dataframe)
+	Freq.Matrix$ID<-factor(Freq.Matrix$ID,levels=c("Control","Stim","AfterStim"))
+	Freq.Matrix$AnimalID<-factor(Freq.Matrix$AnimalID)
+	Freq.Matrix$Condition<-factor(Freq.Matrix$Condition,levels=c("Normoxia","Hypoxia","Hypercapnia"))
+	MinGroup<-min(table(Freq.Matrix$Condition))
+
+	Freq.Matrix.sub1a<-subset(Freq.Matrix,Freq.Matrix$Condition=="Normoxia" & Freq.Matrix$ID=="Control")
+	Freq.Matrix.sub1cont<-Freq.Matrix.sub1a[1:(MinGroup/3),]
+	Freq.Matrix.sub1a<-subset(Freq.Matrix,Freq.Matrix$Condition=="Normoxia" & Freq.Matrix$ID=="Stim")
+	Freq.Matrix.sub1stim<-Freq.Matrix.sub1a[1:(MinGroup/3),]
+	Freq.Matrix.sub1a<-subset(Freq.Matrix,Freq.Matrix$Condition=="Normoxia" & Freq.Matrix$ID=="AfterStim")
+	Freq.Matrix.sub1after<-Freq.Matrix.sub1a[1:(MinGroup/3),]
+	Freq.Matrix.sub1<-rbind(Freq.Matrix.sub1cont,Freq.Matrix.sub1stim,Freq.Matrix.sub1after)
+
+	Freq.Matrix.sub2a<-subset(Freq.Matrix,Freq.Matrix$Condition=="Hypoxia" & Freq.Matrix$ID=="Control")
+	Freq.Matrix.sub2cont<-Freq.Matrix.sub2a[1:(MinGroup/3),]
+	Freq.Matrix.sub2a<-subset(Freq.Matrix,Freq.Matrix$Condition=="Hypoxia" & Freq.Matrix$ID=="Stim")
+	Freq.Matrix.sub2stim<-Freq.Matrix.sub2a[1:(MinGroup/3),]
+	Freq.Matrix.sub2a<-subset(Freq.Matrix,Freq.Matrix$Condition=="Hypoxia" & Freq.Matrix$ID=="AfterStim")
+	Freq.Matrix.sub2after<-Freq.Matrix.sub2a[1:(MinGroup/3),]
+	Freq.Matrix.sub2<-rbind(Freq.Matrix.sub2cont,Freq.Matrix.sub2stim,Freq.Matrix.sub2after)
+
+	Freq.Matrix.sub3a<-subset(Freq.Matrix,Freq.Matrix$Condition=="Hypercapnia" & Freq.Matrix$ID=="Control")
+	Freq.Matrix.sub3cont<-Freq.Matrix.sub3a[1:(MinGroup/3),]
+	Freq.Matrix.sub3a<-subset(Freq.Matrix,Freq.Matrix$Condition=="Hypercapnia" & Freq.Matrix$ID=="Stim")
+	Freq.Matrix.sub3stim<-Freq.Matrix.sub3a[1:(MinGroup/3),]
+	Freq.Matrix.sub3a<-subset(Freq.Matrix,Freq.Matrix$Condition=="Hypercapnia" & Freq.Matrix$ID=="AfterStim")
+	Freq.Matrix.sub3after<-Freq.Matrix.sub3a[1:(MinGroup/3),]
+	Freq.Matrix.sub3<-rbind(Freq.Matrix.sub3cont,Freq.Matrix.sub3stim,Freq.Matrix.sub3after)
+	Freq.Matrix<-rbind(Freq.Matrix.sub1,Freq.Matrix.sub2,Freq.Matrix.sub3)
+	
+	print(paste("Normoxia Datapoints:",nrow(Freq.Matrix.sub1a),"; Hypoxia Datapoints:",nrow(Freq.Matrix.sub2a),"; Hypercapnia Datapoints:",nrow(Freq.Matrix.sub3a)))
+	print(paste("Only the first",MinGroup/3,"datapoints of each group were used to compare the Breathing Frequency"))
+
+	pdf("BreathingFrequency-Normoxia-Hypoxia-Hypercapnia.pdf")	
+	g0<-ggplot(Freq.Matrix,aes(x=ID,y=Frequency,fill=ID))+ geom_boxplot(outlier.colour =NA,lwd=1.1)+stat_summary(fun=mean,size=3.5,shape=18,col="red", geom='point',position=position_dodge(width=0.75))+ scale_fill_manual(values=c("white","blue","white")) +facet_grid(.~Condition,scales="free_x") + labs(legend.position="top",title="",y="Frequency (Hz)") + scale_y_continuous(limits=c(-1, 12))+ theme(legend.position="top",panel.background = element_rect(fill = "white"),panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+	ggsave("BreathingFrequency_RespiratoryConditions_Boxplots.tiff", units="in", dpi=300)
+	print(g0)
+	
+	dev.off()
+	write.table(Freq.Matrix,"Group-BreathingFrequency.txt",sep="\t",dec=".",row.names=F)
+	
+	#Stats
+	RespCondition<-c("Normoxia","Hypoxia","Hypercapnia")
+	for (i in 1:length(RespCondition)){
+	  print(paste("Stats:",RespCondition[i]))
+	  Freq.Matrix.sel<-subset(Freq.Matrix,Freq.Matrix[,"Condition"]==RespCondition[i])
+	  
+	  print(kruskal.test(Frequency ~ ID, data = Freq.Matrix.sel))
+    print(pairwise.wilcox.test(Freq.Matrix.sel$Frequency,Freq.Matrix.sel$ID,paired=F,alternative = "two.sided",correct=F,p.adjust.method = "BH"))
+	}
+	
+	IDlabels<-c("Control","Stim","AfterStim")
+	for (i in 1:length(	IDlabels)){
+	  print(paste("Stats:",	IDlabels[i]))
+	  Freq.Matrix.sel<-subset(Freq.Matrix,Freq.Matrix[,"ID"]==	IDlabels[i])
+	  
+	  print(kruskal.test(Frequency ~ Condition, data = Freq.Matrix.sel))
+    print(pairwise.wilcox.test(Freq.Matrix.sel$Frequency,Freq.Matrix.sel$Condition,paired=F,alternative = "two.sided",correct=F,p.adjust.method = "BH"))
+	}
+
+	#Summary
+	tmpsummary <- summarySE(Freq.Matrix, measurevar="Frequency", groupvars=c("ID","Condition"))   
+	print(tmpsummary)
+
+}
+Awake_GroupDiffConditions_Frequency(1)
+```
